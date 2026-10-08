@@ -1,0 +1,39 @@
+name: Code quality
+
+on:
+  schedule:
+    - cron: "17 6 * * 4"
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      area:
+        description: Folder to work on now (empty continues where the last pass stopped)
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+  checks: read
+
+concurrency:
+  group: claude-code-quality-${{ github.event.pull_request.number || 'scheduled' }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref || github.ref }}
+          persist-credentials: false
+      - uses: Mackery6969/Claude-Autofix@v1
+        with:
+          task: quality
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          area: ${{ inputs.area }}
+          verify-command: npm ci && npm test

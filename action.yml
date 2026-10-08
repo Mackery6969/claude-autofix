@@ -1,0 +1,101 @@
+name: "Claude Autofix"
+description: "Has Claude fix Semgrep security findings and make weekly code-quality passes as Dependabot-style pull requests, pausing on usage limits."
+author: "Mackery"
+
+inputs:
+  task:
+    description: "What to do: security (scan with Semgrep and triage findings), quality (one code-quality pass) or resume (restart runs paused by a usage limit)."
+    required: true
+  claude-code-oauth-token:
+    description: "Token for your Claude subscription, from `claude setup-token`. Without it (or anthropic-api-key) Claude is off for this repository."
+    default: ""
+  anthropic-api-key:
+    description: "Anthropic API key, billed per use. Alternative to claude-code-oauth-token."
+    default: ""
+  github-token:
+    description: "Token for the GitHub API and for pushing the pull request branch."
+    default: ${{ github.token }}
+  pr-token:
+    description: "Optional token used instead of github-token to push and open pull requests, so they trigger CI and can change workflow files (needs contents, pull requests and workflows write)."
+    default: ""
+  model:
+    description: "Claude model. Defaults to claude-opus-5-5 for security and claude-sonnet-5-5 for quality."
+    default: ""
+  max-budget-usd:
+    description: "Stop Claude once a run has used this much (API-equivalent). Defaults to 5 for security and 3 for quality."
+    default: ""
+  verify-command:
+    description: "Shell commands that must pass after Claude's changes (typecheck, tests). Runs from the repository root with bash. Empty skips verification."
+    default: ""
+  branch:
+    description: "Branch the pull request is opened from, reused across runs. Defaults to claude/security-fixes or claude/code-quality."
+    default: ""
+  labels:
+    description: "Pull request labels, one per line or comma-separated."
+    default: ""
+  force:
+    description: "security: triage even if an earlier pull request covered these findings. quality: replace the open pull request."
+    default: "false"
+  resume-workflow:
+    description: "File name of this repository's resume workflow, turned on when a run pauses."
+    default: "claude-resume.yml"
+  semgrep-config:
+    description: "security: Semgrep rulesets or config files, separated by spaces or newlines."
+    default: "p/default p/secrets p/github-actions"
+  semgrep-version:
+    description: "security: Semgrep version to install with pipx when it isn't already on the runner."
+    default: "1.180.0"
+  upload-sarif:
+    description: "security: upload the findings to code scanning."
+    default: "true"
+  max-findings:
+    description: "security: most findings Claude triages in one run. The rest follow in the next pull request."
+    default: "20"
+  areas:
+    description: "quality: folders to work through, one per line. Empty means the whole repository."
+    default: ""
+  area:
+    description: "quality: work on this folder now instead of continuing where the last pass stopped."
+    default: ""
+  exclude:
+    description: "quality: paths Claude must not change (vendored code, generated files), one per line."
+    default: ""
+  extensions:
+    description: "quality: file extensions that count as source code, separated by spaces or commas. Defaults to common programming languages."
+    default: ""
+  batch-lines:
+    description: "quality: roughly how many lines of code one pass covers. Larger passes cost more usage and make bigger pull requests."
+    default: "1500"
+  pull-request-mode:
+    description: "quality on pull requests: commit (push the changes to the pull request's branch) or pull-request (open a separate pull request into it)."
+    default: "commit"
+  pull-request-authors:
+    description: "quality on pull requests: only refactor pull requests opened by these users, one per line. Defaults to the repository owner."
+    default: ""
+  instructions:
+    description: "quality: extra guidance for this repository, added to the prompt."
+    default: ""
+
+outputs:
+  findings:
+    description: "security: number of Semgrep findings."
+  files:
+    description: "quality: how many files this pass covered."
+  pull-request-url:
+    description: "The pull request that was opened or updated, if any."
+  paused:
+    description: "true when Claude hit a usage limit and the run paused."
+  resume-at:
+    description: "When a paused run starts again (ISO 8601)."
+  claude-cost-usd:
+    description: "What the Claude run would cost at API prices."
+  resumed:
+    description: "resume: how many paused runs were started again."
+
+runs:
+  using: "node24"
+  main: "dist/index.js"
+
+branding:
+  icon: "shield"
+  color: "orange"

@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Check the tag matches package.json
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION. Bump the version, commit, then tag."
+            exit 1
+          fi
+
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      - name: Commit the bundle and point the tags at it
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --detach
+          git add --force dist
+          git commit --allow-empty -m "Release $GITHUB_REF_NAME (bundled dist/)"
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          git tag -f "$GITHUB_REF_NAME" "$RELEASE_SHA"
+          TAGS="refs/tags/$GITHUB_REF_NAME"
+          case "$GITHUB_REF_NAME" in
+            *-*) ;;
+            *)
+              MAJOR="${GITHUB_REF_NAME%%.*}"
+              git tag -f "$MAJOR" "$RELEASE_SHA"
+              TAGS="$TAGS refs/tags/$MAJOR"
+              ;;
+          esac
+          git push -f origin $TAGS
+          echo "Tagged $RELEASE_SHA as: $TAGS"
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists."
+          else
+            FLAGS=""
+            case "$GITHUB_REF_NAME" in *-*) FLAGS="--prerelease" ;; esac
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag $FLAGS
+          fi
+          {
+            echo "## Released $GITHUB_REF_NAME"
+            echo ""
+            echo "Workflows using \`@${GITHUB_REF_NAME%%.*}\` get this version on their next run."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,46 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md"]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Triage again even if an earlier pull request covered these findings
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  security-events: write
+  actions: write
+
+concurrency:
+  group: claude-security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: ./
+        with:
+          task: security
+          claude-code-oauth-token: ${{ github.event_name != 'pull_request' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          force: ${{ inputs.force == true }}
+          verify-command: npm run typecheck && npm test

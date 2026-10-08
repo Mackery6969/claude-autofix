@@ -1,0 +1,42 @@
+{
+  "name": "claude-autofix",
+  "version": "1.0.0",
+  "description": "A GitHub Action that has Claude fix Semgrep security findings and make weekly code-quality passes, opening Dependabot-style pull requests and pausing on usage limits.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "author": "Mackery",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mackery6969/Claude-Autofix.git"
+  },
+  "homepage": "https://github.com/Mackery6969/Claude-Autofix#readme",
+  "bugs": {
+    "url": "https://github.com/Mackery6969/Claude-Autofix/issues"
+  },
+  "keywords": [
+    "claude",
+    "semgrep",
+    "security",
+    "refactoring",
+    "code-quality",
+    "github-action"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "typecheck": "tsc",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.293"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

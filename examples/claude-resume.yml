@@ -1,0 +1,24 @@
+name: Claude resume
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+
+concurrency:
+  group: claude-resume
+  cancel-in-progress: false
+
+jobs:
+  resume:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: Mackery6969/Claude-Autofix@v1
+        with:
+          task: resume
