@@ -6,10 +6,11 @@ import { GitHubError } from "../base/github.ts";
 import type { PathRules } from "../base/paths.ts";
 import { runHelperScript, type HelperScript } from "../base/scripts.ts";
 import { ClaudeTask, DESCRIPTION_FILE, type ClaudeReport, type Helpers, type PullRequestText, type TaskSettings } from "../base/task.ts";
-import { bySeverity, ensureSemgrep, findingKey, findingsMarker, findingsTable, keysInMarker, RESULTS_FILE, rescanScript, sarifForUpload, scanRepository, type Finding } from "./semgrep.ts";
+import { bySeverity, ensureSemgrep, findingKey, findingsMarker, findingsTable, keysInMarker, RESULTS_FILE, rescanScript, sarifForUpload, scanRepository, type Finding, type Rules } from "./semgrep.ts";
 
 export interface SecurityOptions {
   semgrepConfig: string[];
+  semgrepExcludeRules: string[];
   semgrepVersion: string;
   uploadSarif: boolean;
   maxFindings: number;
@@ -37,7 +38,7 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
     ensureSemgrep(this.#options.semgrepVersion);
     const sarifPath = join(tempDirectory, "semgrep.sarif");
     const resultsPath = join(workspace, RESULTS_FILE);
-    const findings = scanRepository({ cwd: workspace, configs: this.#options.semgrepConfig, jsonPath: resultsPath, sarifPath });
+    const findings = scanRepository({ cwd: workspace, rules: this.rules, jsonPath: resultsPath, sarifPath });
     setOutput("findings", findings.length);
     summary(`## Semgrep: ${findings.length} finding${findings.length === 1 ? "" : "s"}\n\n${findings.length ? findingsTable(findings) : ""}`);
     if (this.#options.uploadSarif) await this.uploadToCodeScanning(sarifPath);
@@ -50,6 +51,7 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
       log("No findings.");
       return undefined;
     }
+    if (!this.claudeEnabled) return this.reportClaudeDisabled();
 
     const pulls = await github.pullRequests(branch, "all");
     const open = pulls.find((pull) => pull.state === "open");
@@ -81,6 +83,7 @@ Triage every finding in the file. Follow the security policy in CLAUDE.md if the
 - Real flaw: fix it with the standard, well-tested mechanism for the language or library (parameterized queries, the framework's escaping API, constant-time comparison, argument-list subprocess calls, and so on). Do not write a custom string filter.
 - False positive: do not change the logic. Directly above the flagged line, add one comment explaining why it is safe, then on the next line a suppression comment that ends the line, in the file's comment syntax: \`// nosemgrep: <check_id>\` or \`# nosemgrep: <check_id>\`. Use the full \`check_id\` from the results. Nothing may follow the rule id on that line, or Semgrep ignores it.
 - Vendored or third-party code: do not patch it. List it under "Needs a human" and suggest updating the dependency or excluding the path.
+- Never write a commit SHA, version number, checksum or URL you can't confirm from files in this repository; you have no network access to look them up. If a fix needs one (for example pinning an action to a commit SHA), list the finding under "Needs a human" and say what to look up.
 - ${workflowRule}
 
 Change only what each finding needs. Do not refactor, reformat, or restyle anything else; security fixes and quality changes are kept in separate pull requests. Do not start subagents.
@@ -92,11 +95,15 @@ When you are done:
   }
 
   protected helperScripts(): HelperScript[] {
-    return [rescanScript(this.#options.semgrepConfig)];
+    return [rescanScript(this.rules)];
   }
 
   protected scratchFiles(): string[] {
     return [RESULTS_FILE];
+  }
+
+  private get rules(): Rules {
+    return { configs: this.#options.semgrepConfig, excludeRules: this.#options.semgrepExcludeRules };
   }
 
   protected pathRules(): PathRules {

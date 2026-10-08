@@ -103,13 +103,19 @@ export abstract class ClaudeTask<Plan> {
     return this.settings.refName === (await this.defaultBranch());
   }
 
+  protected get claudeEnabled(): boolean {
+    return hasCredentials(this.settings.credentials);
+  }
+
+  protected reportClaudeDisabled(): undefined {
+    notice("Claude isn't enabled for this repository. Add a CLAUDE_CODE_OAUTH_TOKEN (or ANTHROPIC_API_KEY) secret and pass it to the action to turn it on.");
+    return undefined;
+  }
+
   async run(): Promise<void> {
     const plan = await this.plan();
     if (plan === undefined) return;
-    if (!hasCredentials(this.settings.credentials)) {
-      notice("Claude isn't enabled for this repository. Add a CLAUDE_CODE_OAUTH_TOKEN (or ANTHROPIC_API_KEY) secret and pass it to the action to turn it on.");
-      return;
-    }
+    if (!this.claudeEnabled) return this.reportClaudeDisabled();
 
     const { workspace, tempDirectory } = this.settings;
     const helpers: Helpers = { verify: `bash ${writeHelperScript(tempDirectory, workspace, { name: "verify.sh", body: this.settings.verifyCommand })}` };

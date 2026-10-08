@@ -88,6 +88,7 @@ The action never sleeps in a job waiting for a limit, and Claude can't start sub
 | `pr-token` | | A token to push and open pull requests with instead of `GITHUB_TOKEN`. Changes pushed with `GITHUB_TOKEN` don't trigger your other workflows, and `GITHUB_TOKEN` can't change files in `.github/workflows/`. A fine-grained token with contents, pull requests and workflows write fixes both. |
 | `resume-workflow` | `claude-resume.yml` | File name of the resume workflow to turn on when a run pauses. |
 | `semgrep-config` | `p/default p/secrets p/github-actions` | security: rulesets or config files. |
+| `semgrep-exclude-rules` | | security: rule ids to leave out, such as `yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag` if you don't want actions pinned to commit SHAs. |
 | `semgrep-version` | `1.180.0` | security: Semgrep version installed with pipx. |
 | `upload-sarif` | `true` | security: upload findings to code scanning. |
 | `max-findings` | `20` | security: most findings triaged in one pull request. |

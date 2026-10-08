@@ -36,8 +36,9 @@ test("the most severe findings are triaged first", () => {
 });
 
 test("the rescan script quotes configs and skips the scratch files", () => {
-  const script = rescanScript(["p/default", "rules/it's mine.yml"]);
+  const script = rescanScript({ configs: ["p/default", "rules/it's mine.yml"], excludeRules: ["yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"] });
   assert.match(script.body, /'--config' 'p\/default'/);
   assert.ok(script.body.includes(`'rules/it'\\''s mine.yml'`));
   assert.match(script.body, /'--exclude' 'semgrep-results\.json'/);
+  assert.match(script.body, /'--exclude-rule' 'yaml\.github-actions\.security\.github-actions-mutable-action-tag/);
 });

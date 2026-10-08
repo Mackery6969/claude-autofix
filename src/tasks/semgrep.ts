@@ -18,9 +18,14 @@ export interface Finding {
   extra: { message: string; severity: string };
 }
 
+export interface Rules {
+  configs: string[];
+  excludeRules: string[];
+}
+
 export interface ScanOptions {
   cwd: string;
-  configs: string[];
+  rules: Rules;
   jsonPath: string;
   sarifPath: string;
 }
@@ -33,7 +38,7 @@ export function ensureSemgrep(version: string): void {
 }
 
 export function scanRepository(options: ScanOptions): Finding[] {
-  const args = ["scan", ...configArgs(options.configs), "--metrics=off", "--disable-version-check", `--json-output=${options.jsonPath}`, `--sarif-output=${options.sarifPath}`];
+  const args = ["scan", ...ruleArgs(options.rules), "--metrics=off", "--disable-version-check", `--json-output=${options.jsonPath}`, `--sarif-output=${options.sarifPath}`];
   const scan = spawnSync("semgrep", args, { cwd: options.cwd, encoding: "utf8", env: withoutRunnerSecrets(), maxBuffer: 256 * 1024 * 1024 });
   untrustedOutput("Semgrep", () => log(`${scan.stdout ?? ""}${scan.stderr ?? ""}`));
   if (scan.status !== 0) throw new Error(`Semgrep failed with exit code ${scan.status}. See the Semgrep log group above.`);
@@ -75,9 +80,9 @@ export function bySeverity(a: Finding, b: Finding): number {
   return rank(a) - rank(b) || a.path.localeCompare(b.path) || a.start.line - b.start.line;
 }
 
-export function rescanScript(configs: string[]): HelperScript {
+export function rescanScript(rules: Rules): HelperScript {
   const excludes = [RESULTS_FILE, ".claude-pr.md"].flatMap((file) => ["--exclude", file]);
-  const command = ["semgrep", "scan", ...configArgs(configs), "--metrics=off", "--disable-version-check", "--quiet", "--json", ...excludes].map(shellQuote).join(" ");
+  const command = ["semgrep", "scan", ...ruleArgs(rules), "--metrics=off", "--disable-version-check", "--quiet", "--json", ...excludes].map(shellQuote).join(" ");
   return { name: "rescan.sh", body: `${command} | jq -r '.results[] | "\\(.check_id) \\(.path):\\(.start.line)"'` };
 }
 
@@ -92,6 +97,6 @@ export function findingsTable(findings: Finding[]): string {
   return ["| Rule | Location | Severity |", "| --- | --- | --- |", ...rows].join("\n");
 }
 
-function configArgs(configs: string[]): string[] {
-  return configs.flatMap((config) => ["--config", config]);
+function ruleArgs(rules: Rules): string[] {
+  return [...rules.configs.flatMap((config) => ["--config", config]), ...rules.excludeRules.flatMap((rule) => ["--exclude-rule", rule])];
 }

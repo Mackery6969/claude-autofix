@@ -42,6 +42,9 @@ inputs:
   semgrep-config:
     description: "security: Semgrep rulesets or config files, separated by spaces or newlines."
     default: "p/default p/secrets p/github-actions"
+  semgrep-exclude-rules:
+    description: "security: Semgrep rule ids to leave out, separated by spaces or newlines."
+    default: ""
   semgrep-version:
     description: "security: Semgrep version to install with pipx when it isn't already on the runner."
     default: "1.180.0"

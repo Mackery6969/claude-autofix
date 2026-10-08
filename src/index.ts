@@ -58,6 +58,7 @@ async function main(): Promise<void> {
 function securityTask(settings: TaskSettings): SecurityTask {
   return new SecurityTask(settings, {
     semgrepConfig: input("semgrep-config", "p/default p/secrets p/github-actions").split(/\s+/).filter(Boolean),
+    semgrepExcludeRules: input("semgrep-exclude-rules").split(/\s+/).filter(Boolean),
     semgrepVersion: input("semgrep-version", "1.180.0"),
     uploadSarif: booleanInput("upload-sarif", true),
     maxFindings: numberInput("max-findings", 20),

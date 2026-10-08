@@ -1,6 +1,6 @@
 {
   "name": "claude-autofix",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A GitHub Action that has Claude fix Semgrep security findings and make weekly code-quality passes, opening Dependabot-style pull requests and pausing on usage limits.",
   "type": "module",
   "private": true,

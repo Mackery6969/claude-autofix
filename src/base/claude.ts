@@ -40,18 +40,18 @@ export function withoutRunnerSecrets(environment: NodeJS.ProcessEnv = process.en
 }
 
 export function installClaudeCode(directory: string): string {
+  if (process.platform === "win32") throw new ActionFailure("Claude Autofix needs a Linux or macOS runner, such as ubuntu-latest.");
   const platform = `${process.platform}-${process.arch}`;
   const packageName = `@anthropic-ai/claude-agent-sdk-${platform}`;
-  const executable = join(directory, "node_modules", ...packageName.split("/"), process.platform === "win32" ? "claude.exe" : "claude");
+  const executable = join(directory, "node_modules", ...packageName.split("/"), "claude");
   if (existsSync(executable)) return executable;
 
   log(`Installing Claude Code (${packageName}@${CLAUDE_AGENT_SDK_VERSION})`);
   const result = spawnSync("npm", ["install", "--no-save", "--no-audit", "--no-fund", "--loglevel=error", "--prefix", directory, `${packageName}@${CLAUDE_AGENT_SDK_VERSION}`], {
     stdio: "inherit",
-    shell: process.platform === "win32",
     env: withoutRunnerSecrets(),
   });
-  if (result.status !== 0 || !existsSync(executable)) throw new ActionFailure(`Couldn't install Claude Code for ${platform}. Use a Linux, macOS or Windows runner on x64 or arm64.`);
+  if (result.status !== 0 || !existsSync(executable)) throw new ActionFailure(`Couldn't install Claude Code for ${platform}. Use an x64 or arm64 runner.`);
   return executable;
 }
 
