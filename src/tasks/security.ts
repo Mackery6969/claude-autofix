@@ -8,6 +8,7 @@ import { isInside, type PathRules } from "../base/paths.ts";
 import { changedLines, touchesChangedLines, whyNotEligible, type PullRequestEvent, type PullRequestMode } from "../base/pulls.ts";
 import { runHelperScript, type HelperScript } from "../base/scripts.ts";
 import { ClaudeTask, commentMarker, commitMessage, type ClaudeReport, type Delivery, type Helpers, type PullRequestText, type TaskSettings } from "../base/task.ts";
+import { ALERTS_FILE, alertKey, alertRank, dismissAlerts, dismissalInstructions, dismissalsSection, DISMISSALS_FILE, fromOtherScanners, readDismissals, writeAlertsFile, type Alert, type Dismissal, type ScannerFilter } from "./alerts.ts";
 import { applyPins, resolvePins, type Pin } from "./pins.ts";
 import { bySeverity, ensureSemgrep, findingKey, findingsMarker, findingsTable, keysInMarker, RESULTS_FILE, rescanScript, sarifForUpload, scanRepository, type Finding, type Rules } from "./semgrep.ts";
 
@@ -22,6 +23,7 @@ export interface SecurityOptions {
   pullRequestMode: PullRequestMode;
   pullRequestAuthors: string[];
   pullRequest: PullRequestEvent | undefined;
+  scanners: ScannerFilter;
 }
 
 interface Keyed {
@@ -38,11 +40,14 @@ interface SecurityPlan {
   applied: Pin[];
   suggested: Pin[];
   manual: Pin[];
+  alerts: Alert[];
+  dismissed: Dismissal[];
   handledBefore: string[];
 }
 
 const WORKFLOWS = ".github/workflows";
 const MESSAGE_LIMIT = 200;
+const SEMGREP_RANK: Record<string, number> = { ERROR: 1, WARNING: 2, INFO: 3 };
 
 export class SecurityTask extends ClaudeTask<SecurityPlan> {
   protected readonly name = "security";
@@ -63,7 +68,8 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
       log("Scan only: Claude fixes findings on the default branch and on your own pull requests.");
       return undefined;
     }
-    if (findings.length === 0) {
+    const alerts = fromOtherScanners(await this.settings.github.openAlerts(), this.#options.scanners);
+    if (findings.length === 0 && alerts.length === 0) {
       log("No findings.");
       return undefined;
     }
@@ -77,11 +83,12 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
     }
     const handled = new Set(this.settings.force ? [] : pulls.flatMap((pull) => keysInMarker(pull.body ?? "")));
     const pending = this.keyed(findings).filter(({ key }) => !handled.has(key));
-    if (pending.length === 0) {
+    const pendingAlerts = alerts.filter((alert) => !handled.has(alertKey(alert)));
+    if (pending.length === 0 && pendingAlerts.length === 0) {
       log("Every finding is covered by an earlier pull request (merged or closed). Run with force to triage them again.");
       return undefined;
     }
-    return this.prepare(undefined, pending, findings.length, []);
+    return this.prepare(undefined, pending, findings.length + alerts.length, [], pendingAlerts);
   }
 
   private async planPullRequest(pull: PullRequestEvent, findings: Finding[]): Promise<SecurityPlan | undefined> {
@@ -107,12 +114,19 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
       log(`Every finding on #${pull.number}'s changed lines has already been handled.`);
       return undefined;
     }
-    return this.prepare(pull, pending, introducedOnHead.length, handledBefore);
+    return this.prepare(pull, pending, introducedOnHead.length, handledBefore, []);
   }
 
-  private async prepare(pull: PullRequestEvent | undefined, pending: Keyed[], total: number, handledBefore: string[]): Promise<SecurityPlan | undefined> {
+  private async prepare(pull: PullRequestEvent | undefined, pending: Keyed[], total: number, handledBefore: string[], pendingAlerts: Alert[]): Promise<SecurityPlan | undefined> {
     const { github, workspace } = this.settings;
-    const batch = pending.sort((a, b) => bySeverity(a.finding, b.finding)).slice(0, this.#options.maxFindings);
+    const work = [
+      ...pending.sort((a, b) => bySeverity(a.finding, b.finding)).map((semgrep) => ({ rank: SEMGREP_RANK[semgrep.finding.extra.severity.toUpperCase()] ?? 3, semgrep, alert: undefined })),
+      ...pendingAlerts.map((alert) => ({ rank: alertRank(alert), semgrep: undefined, alert })),
+    ]
+      .sort((a, b) => a.rank - b.rank)
+      .slice(0, this.#options.maxFindings);
+    const batch = work.flatMap((item) => (item.semgrep ? [item.semgrep] : []));
+    const alerts = work.flatMap((item) => (item.alert ? [item.alert] : []));
     const pins = await resolvePins(batch.map(({ finding }) => finding), workspace, (repository, ref) => github.commitSha(repository, ref));
     const locked = this.canEditWorkflows ? [] : pins.filter((pin) => isInside(pin.path, WORKFLOWS));
     const applied = pins.filter((pin) => !locked.includes(pin));
@@ -121,19 +135,22 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
     const plan: SecurityPlan = {
       pull,
       total,
-      pending: pending.length,
+      pending: pending.length + pendingAlerts.length,
       batch,
       forClaude: batch.filter(({ finding }) => !pins.some((pin) => pin.finding === finding)),
       applied,
       suggested: pull ? locked : [],
       manual: pull ? [] : locked,
+      alerts,
+      dismissed: [],
       handledBefore,
     };
     if (pull) await this.suggestPins(pull, plan.suggested);
     writeFileSync(join(workspace, RESULTS_FILE), JSON.stringify({ results: plan.forClaude.map(({ finding }) => finding) }, null, 2));
-    log(`Handling ${batch.length} of ${pending.length} new findings: ${pins.length} pinned without Claude, ${plan.forClaude.length} for Claude.`);
+    if (alerts.length) writeAlertsFile(workspace, alerts);
+    log(`Handling ${batch.length + alerts.length} of ${plan.pending} new findings: ${pins.length} pinned without Claude, ${plan.forClaude.length + alerts.length} for Claude (${alerts.length} from other scanners).`);
 
-    if (plan.forClaude.length === 0 && applied.length === 0) {
+    if (plan.forClaude.length === 0 && applied.length === 0 && alerts.length === 0) {
       if (pull) await github.upsertComment(pull.number, commentMarker(this.name), `### Security fixes\n\n${this.pinsSection(plan)}\n\n${this.handledMarker(plan)}`);
       else summary(this.pinsSection(plan));
       return undefined;
@@ -142,7 +159,13 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
   }
 
   protected needsClaude(plan: SecurityPlan): boolean {
-    return plan.forClaude.length > 0;
+    return plan.forClaude.length > 0 || plan.alerts.length > 0;
+  }
+
+  protected async finished(plan: SecurityPlan): Promise<void> {
+    if (plan.alerts.length === 0) return;
+    const allowed = new Set(plan.alerts.map((alert) => alert.number));
+    plan.dismissed = await dismissAlerts(this.settings.github, readDismissals(this.settings.workspace, allowed));
   }
 
   protected prompt(plan: SecurityPlan, helpers: Helpers): string {
@@ -150,9 +173,10 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
       ? "Files under .github/workflows/ may be edited if a finding is there."
       : 'Do not edit files under .github/workflows/: this run cannot push workflow changes. List findings there under "Needs a human".';
     const scope = plan.pull ? `on lines that pull request #${plan.pull.number} adds or changes` : "in this repository";
-    return `Semgrep reported ${plan.total} finding(s) ${scope}. This run covers ${plan.forClaude.length} of them, listed in \`${RESULTS_FILE}\` at the repository root. Each result has \`check_id\` (the rule id), \`path\`, \`start.line\`/\`end.line\`, and \`extra.message\`. Findings that aren't in that file are out of scope for this run.
+    const alertsNote = plan.alerts.length ? `\n\nOther scanners also reported ${plan.alerts.length} alert(s) for this run, listed in \`${ALERTS_FILE}\` (number, tool, rule, kind, path, lines, message). ${dismissalInstructions()}` : "";
+    return `Scanners reported ${plan.total} finding(s) ${scope}. This run covers ${plan.forClaude.length} Semgrep finding(s), listed in \`${RESULTS_FILE}\` at the repository root. Each result has \`check_id\` (the rule id), \`path\`, \`start.line\`/\`end.line\`, and \`extra.message\`.${alertsNote}
 
-Triage every finding in the file. Follow the security policy in CLAUDE.md if the repository has one. Where it says nothing, use these defaults:
+Findings that aren't in these files are out of scope for this run. Triage every finding in them. Follow the security policy in CLAUDE.md if the repository has one. Where it says nothing, use these defaults:
 
 - Real flaw: fix it with the standard, well-tested mechanism for the language or library (parameterized queries, the framework's escaping API, constant-time comparison, argument-list subprocess calls, and so on). Do not write a custom string filter.
 - False positive: do not change the logic. Directly above the flagged line, add one comment explaining why it is safe, then on the next line a suppression comment that ends the line, in the file's comment syntax: \`// nosemgrep: <check_id>\` or \`# nosemgrep: <check_id>\`. Use the full \`check_id\` from the results. Nothing may follow the rule id on that line, or Semgrep ignores it.
@@ -175,7 +199,7 @@ When you are done:
   }
 
   protected scratchFiles(): string[] {
-    return [RESULTS_FILE];
+    return [RESULTS_FILE, ALERTS_FILE, DISMISSALS_FILE];
   }
 
   protected pathRules(): PathRules {
@@ -189,15 +213,15 @@ When you are done:
   }
 
   protected pullRequest(plan: SecurityPlan, report: ClaudeReport): PullRequestText {
-    const count = plan.batch.length;
-    const description = [report.description, this.pinsSection(plan)].filter(Boolean).join("\n\n");
+    const count = plan.batch.length + plan.alerts.length;
+    const description = [report.description, this.pinsSection(plan), dismissalsSection(plan.dismissed, plan.alerts)].filter(Boolean).join("\n\n");
     const later = plan.pending > count ? ` The other ${plan.pending - count} follow ${plan.pull ? "on the next run" : "in the next pull request, once this one is merged or closed"}.` : "";
     const scope = plan.pull
       ? `This covers ${count} of the ${plan.pending} new findings on lines this pull request changes.${later}`
       : `This covers ${count} of the ${plan.pending} findings that hadn't been triaged yet.${later} Semgrep findings in the repository: **${plan.total}** before, **${this.remainingFindings()}** after this change.`;
     const ignoring = plan.pull ? "" : " Closing this pull request without merging it marks these findings as ignored; new or changed findings still come through.";
     const pinned = plan.applied.length + plan.suggested.length;
-    const fallback = plan.forClaude.length === 0 && pinned > 0 ? `Pin ${pinned} GitHub Action${pinned === 1 ? "" : "s"} to commit SHAs` : `Triage ${count} Semgrep finding${count === 1 ? "" : "s"}`;
+    const fallback = plan.forClaude.length === 0 && plan.alerts.length === 0 && pinned > 0 ? `Pin ${pinned} GitHub Action${pinned === 1 ? "" : "s"} to commit SHAs` : `Fix ${count} scanner finding${count === 1 ? "" : "s"}`;
     const title = report.title ?? fallback;
     return {
       title,
@@ -219,7 +243,7 @@ When you are done:
   }
 
   private handledMarker(plan: SecurityPlan): string {
-    return findingsMarker([...new Set([...plan.handledBefore, ...plan.batch.map(({ key }) => key)])]);
+    return findingsMarker([...new Set([...plan.handledBefore, ...plan.batch.map(({ key }) => key), ...plan.alerts.map(alertKey)])]);
   }
 
   private remainingFindings(): string {

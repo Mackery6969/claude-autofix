@@ -140,7 +140,7 @@ When you are done:
     return [DIFF_FILE];
   }
 
-  protected finished(plan: QualityPlan): void {
+  protected async finished(plan: QualityPlan): Promise<void> {
     if (plan.mode === "batch" && plan.saveCursor) notice(cursorMessage(plan.cursor), CURSOR_TITLE);
   }
 

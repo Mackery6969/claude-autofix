@@ -29,6 +29,14 @@ export interface PullRequestFile {
   patch?: string;
 }
 
+export interface CodeScanningAlert {
+  number: number;
+  html_url: string;
+  rule: { id: string; severity: string | null; security_severity_level: string | null; description: string; tags?: string[] };
+  tool: { name: string };
+  most_recent_instance: { location: { path: string; start_line: number; end_line: number }; message: { text: string } };
+}
+
 export interface Comment {
   id: number;
   body: string | null;
@@ -133,6 +141,19 @@ export class GitHub {
 
   async deleteBranch(name: string): Promise<void> {
     await this.request("DELETE", `/repos/${this.repository}/git/refs/heads/${name.split("/").map(encodeURIComponent).join("/")}`);
+  }
+
+  async openAlerts(): Promise<CodeScanningAlert[]> {
+    try {
+      return await this.paginate<CodeScanningAlert>((page) => `/repos/${this.repository}/code-scanning/alerts?state=open&per_page=100&page=${page}`, 10);
+    } catch (error) {
+      if (error instanceof GitHubError && (error.status === 403 || error.status === 404)) return [];
+      throw error;
+    }
+  }
+
+  async dismissAlert(number: number, reason: string, comment: string): Promise<void> {
+    await this.request("PATCH", `/repos/${this.repository}/code-scanning/alerts/${number}`, { state: "dismissed", dismissed_reason: reason, dismissed_comment: comment });
   }
 
   async botUserId(slug: string): Promise<number> {

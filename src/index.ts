@@ -7,6 +7,7 @@ import type { TaskSettings } from "./base/task.ts";
 import { eventAction, pullRequestFromEvent, type PullRequestMode } from "./base/pulls.ts";
 import { QualityTask } from "./tasks/quality.ts";
 import { resume } from "./tasks/resume.ts";
+import { parseScannerFilter } from "./tasks/alerts.ts";
 import { SecurityTask } from "./tasks/security.ts";
 import { SOURCE_EXTENSIONS } from "./tasks/sources.ts";
 
@@ -73,6 +74,7 @@ function securityTask(settings: TaskSettings): SecurityTask {
     sha: requiredEnv("GITHUB_SHA"),
     ref: requiredEnv("GITHUB_REF"),
     ...pullRequestOptions(),
+    scanners: parseScannerFilter(input("code-scanning-tools", "all")),
   });
 }
 

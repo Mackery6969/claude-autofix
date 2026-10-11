@@ -115,6 +115,14 @@ Runs that only pin actions are named for that, like **Pin 2 GitHub Actions to co
 5. Up to `max-findings` of the rest, most severe first, go to Claude. It fixes or suppresses each one, re-runs Semgrep, and runs your `verify-command`.
 6. The result is opened as a pull request with a table of every finding and what was done about it. While it's open, no new security pull request is started; the next batch follows once you merge or close it.
 
+**Other scanners.** The security task also works through open **code scanning alerts** from your other scanners: GML Code Scanner, CodeQL, anything that uploads to the Security tab (Semgrep's own uploads are skipped, since the action already has those findings). Security alerts come first, ranked by security severity alongside the Semgrep findings, then everything else the scanners report (bugs, performance, maintainability), ranked by error, warning, note. Claude fixes what it can; it may resolve a non-security issue only partly, as long as the pull request says what's left. For a false positive, or something not worth changing, it dismisses the alert on GitHub with a reason, and the pull request (or run summary) lists every dismissal with a link, so you can reopen any you disagree with. Fixed alerts close themselves once the scanner sees the fix. Limit which scanners count with `code-scanning-tools`. To react as soon as a scanner reports something, add its workflow to the security workflow's triggers:
+
+```yaml
+  workflow_run:
+    workflows: ["GML Code Scanner"]
+    types: [completed]
+```
+
 Actions used with a tag (`uses: actions/checkout@v7`) are flagged by Semgrep because a tag can be moved. Claude can't look up commit SHAs, so the action pins these itself: it asks GitHub which commit the tag points to and rewrites the line as `uses: actions/checkout@<sha> # v7`. The comment keeps the version readable and lets Dependabot keep the pin current. This costs no Claude usage. Exclude the rule with `semgrep-exclude-rules` if you'd rather keep tags.
 
 **On pull requests**, only findings on lines the pull request adds or changes count, the same ones GitHub comments on.
@@ -174,7 +182,8 @@ The action never sleeps in a job waiting for a limit, and Claude can't start sub
 | `semgrep-exclude-rules` | | security: rule ids to leave out, such as `yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag` if you don't want actions pinned to commit SHAs. |
 | `semgrep-version` | `1.180.0` | security: Semgrep version installed with pipx. |
 | `upload-sarif` | `true` | security: upload findings to code scanning. |
-| `max-findings` | `20` | security: most findings triaged in one pull request. |
+| `max-findings` | `20` | security: most findings triaged in one pull request, across Semgrep and other scanners. |
+| `code-scanning-tools` | `all` | security: which other scanners' alerts to fix or dismiss, one per line. `all` means every scanner but Semgrep; `none` turns it off. |
 | `areas` | whole repository | quality: folders to work through, one per line. |
 | `area` | | quality: work on this folder now instead of continuing the rotation. |
 | `exclude` | | quality: paths Claude must not change, one per line. |

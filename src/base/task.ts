@@ -117,7 +117,7 @@ export abstract class ClaudeTask<Plan> {
     return { kind: "new-pull-request" };
   }
 
-  protected finished(_plan: Plan): void {}
+  protected async finished(_plan: Plan): Promise<void> {}
 
   protected needsClaude(_plan: Plan): boolean {
     return true;
@@ -188,7 +188,7 @@ export abstract class ClaudeTask<Plan> {
 
     const report = this.needsClaude(plan) ? await this.askClaude(plan, helpers) : this.reportWithoutClaude();
     if (!report) return;
-    this.finished(plan);
+    await this.finished(plan);
     this.removeScratchFiles();
     this.dropOffLimitsChanges(plan);
 

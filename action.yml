@@ -48,6 +48,9 @@ inputs:
   semgrep-exclude-rules:
     description: "security: Semgrep rule ids to leave out, separated by spaces or newlines."
     default: ""
+  code-scanning-tools:
+    description: "security: also fix open code scanning alerts from these scanners (such as GML Code Scanner or CodeQL), one per line. all takes every scanner except Semgrep, which the action runs itself; none turns this off."
+    default: "all"
   semgrep-version:
     description: "security: Semgrep version to install with pipx when it isn't already on the runner."
     default: "1.180.0"

@@ -46,7 +46,7 @@ export function scanRepository(options: ScanOptions): Finding[] {
 }
 
 const SEVERITY_ORDER = ["ERROR", "WARNING", "INFO"];
-const MARKER = /<!-- semgrep-findings: ([^>]*?) -->/;
+const MARKER = /<!-- (?:semgrep-findings|claude-handled): ([^>]*?) -->/;
 
 export function findingKey(finding: Finding, cwd: string): string {
   return createHash("sha256").update(`${finding.check_id}\0${finding.path}\0${matchedCode(finding, cwd)}`).digest("hex").slice(0, 12);
@@ -65,7 +65,7 @@ function matchedCode(finding: Finding, cwd: string): string {
 }
 
 export function findingsMarker(keys: string[]): string {
-  return `<!-- semgrep-findings: ${keys.join(" ")} -->`;
+  return `<!-- claude-handled: ${keys.join(" ")} -->`;
 }
 
 export function keysInMarker(body: string): string[] {
