@@ -1,17 +1,18 @@
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ActionFailure, booleanInput, fail, input, mask, multilineInput, numberInput, requiredEnv } from "./base/actions.ts";
+import { botIdentity, GITHUB_ACTIONS_BOT } from "./base/git.ts";
 import { gitHubFromEnvironment } from "./base/github.ts";
 import type { TaskSettings } from "./base/task.ts";
-import { pullRequestFromEvent, type PullRequestMode } from "./base/pulls.ts";
+import { eventAction, pullRequestFromEvent, type PullRequestMode } from "./base/pulls.ts";
 import { QualityTask } from "./tasks/quality.ts";
 import { resume } from "./tasks/resume.ts";
 import { SecurityTask } from "./tasks/security.ts";
 import { SOURCE_EXTENSIONS } from "./tasks/sources.ts";
 
 const CLAUDE_TASKS = {
-  security: { branch: "claude/security-fixes", labels: ["security", "automated"], model: "claude-opus-5-5", budget: 5 },
-  quality: { branch: "claude/code-quality", labels: ["code-quality", "automated"], model: "claude-sonnet-5-5", budget: 3 },
+  security: { branchPrefix: "claude/security", labels: ["security", "automated"], model: "claude-opus-5-5", budget: 5 },
+  quality: { branchPrefix: "claude/quality", labels: ["code-quality", "automated"], model: "claude-sonnet-5-5", budget: 3 },
 };
 
 type ClaudeTaskName = keyof typeof CLAUDE_TASKS;
@@ -32,6 +33,8 @@ async function main(): Promise<void> {
   if (task === "resume") return resume({ github, runId, now: new Date() });
 
   const defaults = CLAUDE_TASKS[task];
+  const appSlug = input("app-slug");
+  const author = appSlug ? botIdentity(appSlug, await github.botUserId(appSlug)) : GITHUB_ACTIONS_BOT;
   const settings: TaskSettings = {
     workspace: resolve(process.env.GITHUB_WORKSPACE ?? process.cwd()),
     tempDirectory: join(process.env.RUNNER_TEMP ?? tmpdir(), "claude-autofix"),
@@ -42,14 +45,18 @@ async function main(): Promise<void> {
     serverUrl: process.env.GITHUB_SERVER_URL ?? "https://github.com",
     runId,
     eventName: process.env.GITHUB_EVENT_NAME ?? "",
+    eventAction: eventAction(),
+    pullRequest: pullRequestFromEvent(),
     refName: process.env.GITHUB_REF_NAME ?? "",
     model: input("model", defaults.model),
     maxBudgetUsd: numberInput("max-budget-usd", defaults.budget),
     verifyCommand: input("verify-command"),
-    branch: input("branch", defaults.branch),
+    branchPrefix: input("branch-prefix", defaults.branchPrefix).replace(/\/+$/, ""),
     labels: input("labels") ? multilineInput("labels") : defaults.labels,
     force: booleanInput("force"),
     resumeWorkflow: input("resume-workflow", "claude-resume.yml"),
+    author,
+    canPushWorkflows: Boolean(prToken || appSlug),
   };
 
   const runner = task === "security" ? securityTask(settings) : qualityTask(settings);

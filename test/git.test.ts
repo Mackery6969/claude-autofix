@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { changedFiles, commitAll, discardUncommitted, git, restore } from "../src/base/git.ts";
+import { botIdentity, changedFiles, commitAll, discardUncommitted, git, GITHUB_ACTIONS_BOT, lastCommitIsBy, restore } from "../src/base/git.ts";
 
 let repo = "";
 
@@ -38,7 +38,7 @@ test("lists edited and new files, ignoring gitignored ones, and restores them", 
 
 test("commits onto the bot branch and throws away what verification left behind", () => {
   writeFileSync(join(repo, "kept.txt"), "fixed\n");
-  commitAll(repo, "claude/security-fixes", "fix(security): triage Semgrep findings");
+  commitAll(repo, "claude/security-fixes", "fix(security): triage Semgrep findings", GITHUB_ACTIONS_BOT);
 
   writeFileSync(join(repo, "build-output.txt"), "generated\n");
   writeFileSync(join(repo, "kept.txt"), "touched by the build\n");
@@ -48,4 +48,13 @@ test("commits onto the bot branch and throws away what verification left behind"
   assert.equal(readFileSync(join(repo, "kept.txt"), "utf8"), "fixed\n");
   assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repo }).trim(), "claude/security-fixes");
   assert.equal(git(["log", "-1", "--format=%an <%ae>|%s"], { cwd: repo }).trim(), "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>|fix(security): triage Semgrep findings");
+});
+
+test("commits as a GitHub App's bot and recognises its own commits", () => {
+  const app = botIdentity("mackery-claude", 123456);
+  assert.deepEqual(app, { name: "mackery-claude[bot]", email: "123456+mackery-claude[bot]@users.noreply.github.com" });
+  writeFileSync(join(repo, "kept.txt"), "fixed again\n");
+  commitAll(repo, "claude/code-quality", "refactor: code-quality pass", app);
+  assert.ok(lastCommitIsBy(repo, app));
+  assert.ok(!lastCommitIsBy(repo, GITHUB_ACTIONS_BOT));
 });

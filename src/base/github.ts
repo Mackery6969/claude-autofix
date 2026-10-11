@@ -15,6 +15,12 @@ export interface PullRequest {
   state: "open" | "closed";
   merged_at: string | null;
   body: string | null;
+  head: { ref: string; sha: string; repo: { full_name: string } | null };
+}
+
+export interface Branch {
+  name: string;
+  sha: string;
 }
 
 export interface PullRequestFile {
@@ -107,12 +113,31 @@ export class GitHub {
     return this.paginate<PullRequest>((page) => `/repos/${this.repository}/pulls?head=${head}&state=${state}&per_page=100&page=${page}`, pages);
   }
 
+  async pullRequestsFromBranches(prefix: string, state: "open" | "all", pages = 3): Promise<PullRequest[]> {
+    const pulls = await this.paginate<PullRequest>((page) => `/repos/${this.repository}/pulls?state=${state}&sort=created&direction=desc&per_page=100&page=${page}`, pages);
+    return pulls.filter((pull) => pull.head.repo?.full_name === this.repository && pull.head.ref.startsWith(prefix));
+  }
+
   pullRequestFiles(number: number): Promise<PullRequestFile[]> {
     return this.paginate<PullRequestFile>((page) => `/repos/${this.repository}/pulls/${number}/files?per_page=100&page=${page}`, 30);
   }
 
   comments(number: number): Promise<Comment[]> {
     return this.paginate<Comment>((page) => `/repos/${this.repository}/issues/${number}/comments?per_page=100&page=${page}`, 10);
+  }
+
+  async branchesStartingWith(prefix: string): Promise<Branch[]> {
+    const refs = await this.request<Array<{ ref: string; object: { sha: string } }>>("GET", `/repos/${this.repository}/git/matching-refs/heads/${prefix.split("/").map(encodeURIComponent).join("/")}`);
+    return refs.map((ref) => ({ name: ref.ref.replace(/^refs\/heads\//, ""), sha: ref.object.sha }));
+  }
+
+  async deleteBranch(name: string): Promise<void> {
+    await this.request("DELETE", `/repos/${this.repository}/git/refs/heads/${name.split("/").map(encodeURIComponent).join("/")}`);
+  }
+
+  async botUserId(slug: string): Promise<number> {
+    const user = await this.request<{ id: number }>("GET", `/users/${encodeURIComponent(`${slug}[bot]`)}`);
+    return user.id;
   }
 
   async findComment(number: number, marker: string): Promise<Comment | undefined> {

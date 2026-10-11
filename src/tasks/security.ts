@@ -2,12 +2,12 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { annotate, log, notice, setOutput, summary, warn } from "../base/actions.ts";
-import { checkoutBranchAt, lastCommitIsFromBot } from "../base/git.ts";
+import { checkoutBranchAt, lastCommitIsBy } from "../base/git.ts";
 import { GitHubError } from "../base/github.ts";
 import { isInside, type PathRules } from "../base/paths.ts";
 import { changedLines, touchesChangedLines, whyNotEligible, type PullRequestEvent, type PullRequestMode } from "../base/pulls.ts";
 import { runHelperScript, type HelperScript } from "../base/scripts.ts";
-import { ClaudeTask, commentMarker, DESCRIPTION_FILE, type ClaudeReport, type Delivery, type Helpers, type PullRequestText, type TaskSettings } from "../base/task.ts";
+import { ClaudeTask, commentMarker, commitMessage, type ClaudeReport, type Delivery, type Helpers, type PullRequestText, type TaskSettings } from "../base/task.ts";
 import { applyPins, resolvePins, type Pin } from "./pins.ts";
 import { bySeverity, ensureSemgrep, findingKey, findingsMarker, findingsTable, keysInMarker, RESULTS_FILE, rescanScript, sarifForUpload, scanRepository, type Finding, type Rules } from "./semgrep.ts";
 
@@ -69,7 +69,7 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
     }
     if (!this.claudeEnabled) return this.reportClaudeDisabled();
 
-    const pulls = await this.settings.github.pullRequests(this.settings.branch, "all");
+    const pulls = await this.ownPullRequests("all");
     const open = pulls.find((pull) => pull.state === "open");
     if (open && !this.settings.force) {
       log(`Waiting for ${open.html_url} to be merged or closed before triaging more findings. Run with force to replace it.`);
@@ -95,7 +95,7 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
     }
 
     checkoutBranchAt({ ...this.pushOptions, branch: pull.head.ref, sha: pull.head.sha });
-    if (lastCommitIsFromBot(workspace)) {
+    if (lastCommitIsBy(workspace, this.settings.author)) {
       log(`The latest commit on #${pull.number} is already Claude's; leaving it for you to review.`);
       return undefined;
     }
@@ -162,10 +162,12 @@ Triage every finding in the file. Follow the security policy in CLAUDE.md if the
 
 Change only what each finding needs. Do not refactor, reformat, or restyle anything else; security fixes and quality changes are kept apart. Do not start subagents.
 
+${this.toolRules(helpers)}
+
 When you are done:
 1. Run \`${helpers.rescan}\` to list the findings left in the repository. Any of this run's findings still there must be listed under "Needs a human" with a reason.
 2. Run \`${helpers.verify}\`. It must pass. If a fix breaks it and you can't repair the fix, revert that fix and list the finding under "Needs a human".
-3. Write a description of your changes to \`${DESCRIPTION_FILE}\` in the repository root. Start with a one-sentence summary, then a table with one row per finding: rule, file:line, verdict (Fixed, False positive, or Needs a human), and a one-line reason. Do not commit; the workflow commits your changes.`;
+3. ${this.descriptionInstructions("Escape user input in the build download handler")} After the title: a one-sentence summary, then a table with one row per finding: rule, file:line, verdict (Fixed, False positive, or Needs a human), and a one-line reason. Do not commit; the workflow commits your changes.`;
   }
 
   protected helperScripts(): HelperScript[] {
@@ -181,9 +183,9 @@ When you are done:
   }
 
   protected delivery(plan: SecurityPlan): Delivery {
-    if (!plan.pull) return { kind: "pull-request", branch: this.settings.branch };
+    if (!plan.pull) return { kind: "new-pull-request" };
     if (this.#options.pullRequestMode === "commit") return { kind: "push", branch: plan.pull.head.ref, pullRequest: plan.pull.number };
-    return { kind: "pull-request", branch: `${this.settings.branch}-pr-${plan.pull.number}`, base: plan.pull.head.ref };
+    return { kind: "pull-request", branch: `${this.settings.branchPrefix}/pr-${plan.pull.number}`, base: plan.pull.head.ref };
   }
 
   protected pullRequest(plan: SecurityPlan, report: ClaudeReport): PullRequestText {
@@ -194,9 +196,12 @@ When you are done:
       ? `This covers ${count} of the ${plan.pending} new findings on lines this pull request changes.${later}`
       : `This covers ${count} of the ${plan.pending} findings that hadn't been triaged yet.${later} Semgrep findings in the repository: **${plan.total}** before, **${this.remainingFindings()}** after this change.`;
     const ignoring = plan.pull ? "" : " Closing this pull request without merging it marks these findings as ignored; new or changed findings still come through.";
+    const pinned = plan.applied.length + plan.suggested.length;
+    const fallback = plan.forClaude.length === 0 && pinned > 0 ? `Pin ${pinned} GitHub Action${pinned === 1 ? "" : "s"} to commit SHAs` : `Triage ${count} Semgrep finding${count === 1 ? "" : "s"}`;
+    const title = report.title ?? fallback;
     return {
-      title: plan.pull ? "Security fixes" : `Security: triage ${count} Semgrep finding${count === 1 ? "" : "s"}`,
-      commitMessage: plan.pull ? `fix(security): fix Semgrep findings in #${plan.pull.number}` : "fix(security): triage Semgrep findings",
+      title,
+      commitMessage: commitMessage("fix(security)", title, description),
       body: `${description}\n\n${scope}${this.footer(report)}${ignoring}\n\n${this.handledMarker(plan)}`,
     };
   }

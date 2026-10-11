@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: "17 6 * * 4"
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review, closed]
   workflow_dispatch:
     inputs:
       area:
@@ -26,7 +26,16 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      HAS_CLAUDE_APP: ${{ secrets.CLAUDE_APP_PRIVATE_KEY != '' }}
     steps:
+      - uses: actions/create-github-app-token@v3
+        id: app
+        if: env.HAS_CLAUDE_APP == 'true'
+        continue-on-error: true
+        with:
+          client-id: Iv23lizzdQw7rAtlQQsX
+          private-key: ${{ secrets.CLAUDE_APP_PRIVATE_KEY }}
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.head_ref || github.ref }}
@@ -35,5 +44,7 @@ jobs:
         with:
           task: quality
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github-token: ${{ steps.app.outputs.token || github.token }}
+          app-slug: ${{ steps.app.outputs.app-slug }}
           area: ${{ inputs.area }}
           verify-command: npm ci && npm test

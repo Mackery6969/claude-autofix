@@ -4,6 +4,7 @@ import type { PullRequestFile } from "./github.ts";
 export interface PullRequestEvent {
   number: number;
   draft?: boolean;
+  merged?: boolean;
   user: { login: string; type: string };
   head: { ref: string; sha: string; repo: { full_name: string } | null };
 }
@@ -12,6 +13,10 @@ export type PullRequestMode = "commit" | "pull-request";
 
 export function pullRequestFromEvent(): PullRequestEvent | undefined {
   return eventPayload<{ pull_request?: PullRequestEvent }>()?.pull_request;
+}
+
+export function eventAction(): string {
+  return eventPayload<{ action?: string }>()?.action ?? "";
 }
 
 export function whyNotEligible(pull: PullRequestEvent, repository: string, authors: string[]): string | undefined {

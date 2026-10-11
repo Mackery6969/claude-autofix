@@ -2,8 +2,16 @@ import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 
-const BOT_NAME = "github-actions[bot]";
-const BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com";
+export interface Identity {
+  name: string;
+  email: string;
+}
+
+export const GITHUB_ACTIONS_BOT: Identity = { name: "github-actions[bot]", email: "41898282+github-actions[bot]@users.noreply.github.com" };
+
+export function botIdentity(slug: string, userId: number): Identity {
+  return { name: `${slug}[bot]`, email: `${userId}+${slug}[bot]@users.noreply.github.com` };
+}
 
 export interface ChangedFile {
   path: string;
@@ -40,10 +48,10 @@ export interface PushOptions {
   repository: string;
 }
 
-export function commitAll(cwd: string, branch: string, message: string): void {
+export function commitAll(cwd: string, branch: string, message: string, author: Identity): void {
   git(["checkout", "-B", branch], { cwd });
   git(["add", "-A"], { cwd });
-  git(["-c", `user.name=${BOT_NAME}`, "-c", `user.email=${BOT_EMAIL}`, "commit", "--no-verify", "-m", message], { cwd });
+  git(["-c", `user.name=${author.name}`, "-c", `user.email=${author.email}`, "commit", "--no-verify", "-m", message], { cwd });
 }
 
 export function discardUncommitted(cwd: string): void {
@@ -70,8 +78,8 @@ export function checkoutBranchAt(options: PushOptions & { sha: string }): void {
   git(["checkout", "--quiet", "-B", branch, sha], { cwd });
 }
 
-export function lastCommitIsFromBot(cwd: string): boolean {
-  return git(["log", "-1", "--format=%ae"], { cwd }).trim() === BOT_EMAIL;
+export function lastCommitIsBy(cwd: string, author: Identity): boolean {
+  return git(["log", "-1", "--format=%ae"], { cwd }).trim() === author.email;
 }
 
 function remoteUrl(options: PushOptions): string {

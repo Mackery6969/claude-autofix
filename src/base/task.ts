@@ -3,10 +3,11 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ActionFailure, log, notice, setOutput, summary, untrustedOutput, warn } from "./actions.ts";
 import { hasCredentials, installClaudeCode, runClaude, type Credentials } from "./claude.ts";
-import { changedFiles, commitAll, discardUncommitted, forcePush, git, pushIfUnchanged, restore, type PushOptions } from "./git.ts";
+import { changedFiles, commitAll, discardUncommitted, forcePush, git, pushIfUnchanged, restore, type Identity, type PushOptions } from "./git.ts";
 import { GitHubError, type GitHub, type PullRequest } from "./github.ts";
 import { pauseRun } from "./pause.ts";
 import { isOffLimits, type PathRules } from "./paths.ts";
+import type { PullRequestEvent } from "./pulls.ts";
 import { runHelperScript, writeHelperScript, type HelperScript } from "./scripts.ts";
 
 export interface TaskSettings {
@@ -19,14 +20,18 @@ export interface TaskSettings {
   serverUrl: string;
   runId: string;
   eventName: string;
+  eventAction: string;
+  pullRequest: PullRequestEvent | undefined;
   refName: string;
   model: string;
   maxBudgetUsd: number;
   verifyCommand: string;
-  branch: string;
+  branchPrefix: string;
   labels: string[];
   force: boolean;
   resumeWorkflow: string;
+  author: Identity;
+  canPushWorkflows: boolean;
 }
 
 export interface PullRequestText {
@@ -36,6 +41,7 @@ export interface PullRequestText {
 }
 
 export interface ClaudeReport {
+  title: string | undefined;
   description: string;
   stoppedEarly: string | undefined;
   errors: string;
@@ -43,19 +49,47 @@ export interface ClaudeReport {
   runUrl: string;
 }
 
-export function commentMarker(task: string): string {
-  return `<!-- claude-autofix:${task} -->`;
-}
-
 export interface Helpers {
   verify: string;
   [name: string]: string;
 }
 
-export type Delivery = { kind: "pull-request"; branch: string; base?: string } | { kind: "push"; branch: string; pullRequest: number };
+export type Delivery = { kind: "new-pull-request" } | { kind: "pull-request"; branch: string; base: string } | { kind: "push"; branch: string; pullRequest: number };
 
 export const DESCRIPTION_FILE = ".claude-pr.md";
 const WORKFLOWS = ".github/workflows";
+const TITLE_LIMIT = 72;
+const SLUG_LIMIT = 50;
+const COMMIT_BODY_LIMIT = 4000;
+
+export function commentMarker(task: string): string {
+  return `<!-- claude-autofix:${task} -->`;
+}
+
+export function parseDescription(markdown: string): { title: string | undefined; body: string } {
+  const [first = "", ...rest] = markdown.trim().split("\n");
+  const heading = /^#{1,3}\s+(.+?)\s*#*$/.exec(first.trim());
+  if (!heading?.[1]) return { title: undefined, body: markdown.trim() };
+  return { title: heading[1].replace(/[.`*]+$/g, "").replace(/`/g, "").slice(0, TITLE_LIMIT).trim(), body: rest.join("\n").trim() };
+}
+
+export function slugify(title: string): string {
+  const slug = title
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (slug.length <= SLUG_LIMIT) return slug || "changes";
+  const cut = slug.slice(0, SLUG_LIMIT);
+  const lastBreak = cut.lastIndexOf("-");
+  return (lastBreak > SLUG_LIMIT / 2 ? cut.slice(0, lastBreak) : cut).replace(/-+$/, "");
+}
+
+export function commitMessage(type: string, title: string, body: string): string {
+  const subject = `${type}: ${/^[A-Z][a-z]/.test(title) ? title.charAt(0).toLowerCase() + title.slice(1) : title}`;
+  const trimmed = body.trim().slice(0, COMMIT_BODY_LIMIT);
+  return trimmed ? `${subject}\n\n${trimmed}` : subject;
+}
 
 export abstract class ClaudeTask<Plan> {
   protected readonly settings: TaskSettings;
@@ -80,13 +114,17 @@ export abstract class ClaudeTask<Plan> {
   }
 
   protected delivery(_plan: Plan): Delivery {
-    return { kind: "pull-request", branch: this.settings.branch };
+    return { kind: "new-pull-request" };
   }
 
   protected finished(_plan: Plan): void {}
 
+  protected needsClaude(_plan: Plan): boolean {
+    return true;
+  }
+
   protected get canEditWorkflows(): boolean {
-    return Boolean(this.settings.prToken);
+    return this.settings.canPushWorkflows;
   }
 
   protected get pushOptions(): Omit<PushOptions, "branch"> {
@@ -96,6 +134,10 @@ export abstract class ClaudeTask<Plan> {
       serverUrl: this.settings.serverUrl,
       repository: this.settings.github.repository,
     };
+  }
+
+  protected get claudeEnabled(): boolean {
+    return hasCredentials(this.settings.credentials);
   }
 
   protected async defaultBranch(): Promise<string> {
@@ -108,8 +150,8 @@ export abstract class ClaudeTask<Plan> {
     return this.settings.refName === (await this.defaultBranch());
   }
 
-  protected get claudeEnabled(): boolean {
-    return hasCredentials(this.settings.credentials);
+  protected ownPullRequests(state: "open" | "all"): Promise<PullRequest[]> {
+    return this.settings.github.pullRequestsFromBranches(`${this.settings.branchPrefix}/`, state);
   }
 
   protected reportClaudeDisabled(): undefined {
@@ -117,11 +159,25 @@ export abstract class ClaudeTask<Plan> {
     return undefined;
   }
 
-  protected needsClaude(_plan: Plan): boolean {
-    return true;
+  protected descriptionInstructions(example: string): string {
+    return `Write a description of your changes to \`${DESCRIPTION_FILE}\` in the repository root. Its first line must be a title naming what changed, written as \`# <title>\`: imperative, specific, under 60 characters, for example \`# ${example}\`. The title becomes the branch name, the commit message and the pull request title, so don't make it generic.`;
+  }
+
+  protected toolRules(helpers: Helpers): string {
+    const commands = [...Object.values(helpers), "git diff", "git status", "git log"].map((command) => `\`${command}\``).join(", ");
+    return `Bash works only for these commands: ${commands}. Anything else is denied, so create and change files with the Write and Edit tools. One denied command doesn't mean Bash is off; still run the commands above.`;
+  }
+
+  protected footer(report: ClaudeReport): string {
+    const early = report.stoppedEarly ? `\n\n> Claude stopped early (${report.stoppedEarly}), so this may not cover everything.` : "";
+    const verified = this.settings.verifyCommand.trim() ? "verify-command passed." : "No verify-command is set, so nothing was built or tested.";
+    const usage = report.costUsd > 0 ? ` Claude usage: $${report.costUsd.toFixed(2)} (API-equivalent).` : "";
+    return `${early}\n\n---\n\n${verified} From this [workflow run](${report.runUrl}).${usage}`;
   }
 
   async run(): Promise<void> {
+    if (this.settings.eventName.startsWith("pull_request") && this.settings.eventAction === "closed") return this.deleteClosedPullRequestBranch();
+    await this.deleteClosedBranches();
     const plan = await this.plan();
     if (plan === undefined) return;
     if (!this.claudeEnabled) return this.reportClaudeDisabled();
@@ -144,7 +200,8 @@ export abstract class ClaudeTask<Plan> {
 
     const text = await this.pullRequest(plan, report);
     const delivery = this.delivery(plan);
-    commitAll(workspace, delivery.branch, text.commitMessage);
+    const branch = delivery.kind === "new-pull-request" ? `${this.settings.branchPrefix}/${slugify(text.title)}` : delivery.branch;
+    commitAll(workspace, branch, text.commitMessage, this.settings.author);
     this.verify();
     discardUncommitted(workspace);
 
@@ -152,18 +209,42 @@ export abstract class ClaudeTask<Plan> {
       await this.pushToPullRequest(delivery, text);
       return;
     }
-    forcePush({ ...this.pushOptions, branch: delivery.branch });
-    const pull = await this.openPullRequest(delivery, text);
+    forcePush({ ...this.pushOptions, branch });
+    const pull = await this.openPullRequest(branch, delivery.kind === "pull-request" ? delivery.base : await this.defaultBranch(), text);
     setOutput("pull-request-url", pull.html_url);
+    setOutput("branch", branch);
     summary(`Pull request: ${pull.html_url}`);
     log(`Pull request: ${pull.html_url}`);
   }
 
-  protected footer(report: ClaudeReport): string {
-    const early = report.stoppedEarly ? `\n\n> Claude stopped early (${report.stoppedEarly}), so this may not cover everything.` : "";
-    const verified = this.settings.verifyCommand.trim() ? "verify-command passed." : "No verify-command is set, so nothing was built or tested.";
-    const usage = report.costUsd > 0 ? ` Claude usage: $${report.costUsd.toFixed(2)} (API-equivalent).` : "";
-    return `${early}\n\n---\n\n${verified} From this [workflow run](${report.runUrl}).${usage}`;
+  private isOwnBranch(name: string): boolean {
+    return name.startsWith(`${this.settings.branchPrefix}/`);
+  }
+
+  private async deleteClosedPullRequestBranch(): Promise<void> {
+    const pull = this.settings.pullRequest;
+    const { github } = this.settings;
+    if (!pull || pull.head.repo?.full_name !== github.repository || !this.isOwnBranch(pull.head.ref)) return;
+    const branch = (await github.branchesStartingWith(pull.head.ref)).find((candidate) => candidate.name === pull.head.ref);
+    if (!branch) return log(`${pull.head.ref} is already gone.`);
+    if (branch.sha !== pull.head.sha) return log(`${pull.head.ref} has commits the pull request doesn't, so it's kept.`);
+    await github.deleteBranch(branch.name);
+    log(`Deleted ${branch.name}: its pull request (#${pull.number}) was ${pull.merged ? "merged" : "closed"}.`);
+  }
+
+  private async deleteClosedBranches(): Promise<void> {
+    if (this.settings.eventName.startsWith("pull_request")) return;
+    const { github } = this.settings;
+    try {
+      for (const candidate of await github.branchesStartingWith(`${this.settings.branchPrefix}/`)) {
+        const [latest] = await github.pullRequests(candidate.name, "all", 1);
+        if (latest?.state !== "closed" || latest.head.sha !== candidate.sha) continue;
+        await github.deleteBranch(candidate.name);
+        log(`Deleted ${candidate.name}: its pull request (#${latest.number}) was ${latest.merged_at ? "merged" : "closed"}.`);
+      }
+    } catch (error) {
+      warn(`Couldn't clean up closed branches: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private async askClaude(plan: Plan, helpers: Helpers): Promise<ClaudeReport | undefined> {
@@ -188,10 +269,12 @@ export abstract class ClaudeTask<Plan> {
     const descriptionPath = join(this.settings.workspace, DESCRIPTION_FILE);
     const written = existsSync(descriptionPath) ? readFileSync(descriptionPath, "utf8").trim() : "";
     const fallback = result.subtype === "success" ? result.result.trim() : "";
+    const { title, body } = parseDescription(written || fallback);
     summary(`Claude: ${result.subtype}, ${result.num_turns} turns, $${result.total_cost_usd.toFixed(2)} API-equivalent.`);
     setOutput("claude-cost-usd", result.total_cost_usd.toFixed(4));
     return {
-      description: written || fallback || "Claude didn't write a summary.",
+      title,
+      description: body || "Claude didn't write a summary.",
       stoppedEarly: result.is_error ? result.subtype : undefined,
       errors: result.subtype === "success" ? "" : result.errors.join("; "),
       costUsd: result.total_cost_usd,
@@ -200,7 +283,7 @@ export abstract class ClaudeTask<Plan> {
   }
 
   private reportWithoutClaude(): ClaudeReport {
-    return { description: "", stoppedEarly: undefined, errors: "", costUsd: 0, runUrl: this.runUrl };
+    return { title: undefined, description: "", stoppedEarly: undefined, errors: "", costUsd: 0, runUrl: this.runUrl };
   }
 
   private get runUrl(): string {
@@ -216,7 +299,7 @@ export abstract class ClaudeTask<Plan> {
     const excluded = this.canEditWorkflows ? rules.excluded : [...rules.excluded, WORKFLOWS];
     for (const file of changedFiles(this.settings.workspace)) {
       if (!isOffLimits(file.path, { ...rules, excluded })) continue;
-      const reason = file.path.startsWith(`${WORKFLOWS}/`) && !this.canEditWorkflows ? "workflow files need a pr-token with workflows permission" : "it's outside what this run may change";
+      const reason = file.path.startsWith(`${WORKFLOWS}/`) && !this.canEditWorkflows ? "workflow files need a token with workflows permission (a GitHub App or pr-token)" : "it's outside what this run may change";
       warn(`Dropped Claude's change to ${file.path}: ${reason}.`);
       restore(file, this.settings.workspace);
     }
@@ -242,18 +325,18 @@ export abstract class ClaudeTask<Plan> {
     summary(`Pushed to ${delivery.branch} (#${delivery.pullRequest}).`);
   }
 
-  private async openPullRequest(delivery: Extract<Delivery, { kind: "pull-request" }>, text: PullRequestText): Promise<PullRequest> {
+  private async openPullRequest(branch: string, base: string, text: PullRequestText): Promise<PullRequest> {
     const { github, labels } = this.settings;
     try {
-      const [existing] = await github.pullRequests(delivery.branch, "open", 1);
+      const [existing] = await github.pullRequests(branch, "open", 1);
       const pull = existing
         ? await github.updatePullRequest(existing.number, { title: text.title, body: text.body })
-        : await github.createPullRequest({ title: text.title, head: delivery.branch, base: delivery.base ?? (await this.defaultBranch()), body: text.body });
+        : await github.createPullRequest({ title: text.title, head: branch, base, body: text.body });
       await github.addLabels(pull.number, labels).catch((error: unknown) => warn(`Couldn't add labels: ${error instanceof Error ? error.message : String(error)}`));
       return pull;
     } catch (error) {
       if (error instanceof GitHubError && error.status === 403) {
-        throw new ActionFailure(`${error.message}\nPushed ${delivery.branch}, but GitHub refused to open the pull request. Turn on Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests", or pass a pr-token.`);
+        throw new ActionFailure(`${error.message}\nPushed ${branch}, but GitHub refused to open the pull request. Turn on Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests", or use a GitHub App token.`);
       }
       throw error;
     }
