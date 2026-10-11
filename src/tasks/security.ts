@@ -305,7 +305,7 @@ When you are done:
 }
 
 function scanTable(findings: Finding[]): string {
-  const cell = (text: string) => text.replace(/\s+/g, " ").replace(/\|/g, "\\|").slice(0, MESSAGE_LIMIT);
+  const cell = (text: string) => text.replace(/\s+/g, " ").replace(/\\/g, "\\\\").replace(/\|/g, "\\|").slice(0, MESSAGE_LIMIT);
   const rows = findings.map((finding) => `| \`${finding.check_id.split(".").at(-1)}\` | \`${finding.path}:${finding.start.line}\` | ${finding.extra.severity} | ${cell(finding.extra.message)} |`);
   return ["| Rule | Location | Severity | Message |", "| --- | --- | --- | --- |", ...rows].join("\n");
 }
