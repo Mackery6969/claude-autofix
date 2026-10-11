@@ -2,7 +2,7 @@
 
 A GitHub Action that puts Claude to work on your repositories the way Dependabot works on your dependencies: it does the job on a schedule and hands you a pull request to review.
 
-- **Security:** scans with [Semgrep](https://semgrep.dev) on every push, every week and on demand. Claude triages new findings on the default branch: real flaws get fixed with standard library mechanisms, false positives get an explained `nosemgrep` suppression. Findings also go to **Security → Code scanning**.
+- **Security:** scans with [Semgrep](https://semgrep.dev) on every push, every pull request, every week and on demand. Claude triages new findings: real flaws get fixed with standard library mechanisms, false positives get an explained `nosemgrep` suppression. On your own pull requests it fixes what the pull request introduces; on anyone else's it comments with what it found. Findings also go to **Security → Code scanning**.
 - **Code quality:** once a week, Claude makes a small, behaviour-preserving refactoring pass over the next batch of files, working through the whole codebase a batch at a time, so even large repositories stay cheap and reviewable. On your own pull requests, it can also tidy the code the pull request changes.
 - **Runs on your Claude subscription.** Hitting a usage limit doesn't fail anything: the run marks itself paused, shows as cancelled, and starts again by itself once the limit resets, whether that's the 5-hour window or the weekly one.
 
@@ -35,11 +35,18 @@ claude setup-token
 ### Security
 
 1. Semgrep scans the checkout (`p/default`, `p/secrets` and `p/github-actions` unless you set `semgrep-config`) and uploads the results to code scanning.
-2. On pull requests and other branches it stops there. Claude only works on the default branch.
+2. On the default branch, it carries on with the steps below. Pull requests are covered in their own section further down; other branches are only scanned.
 3. Each finding gets a key from its rule, its file and the code it flags, so unrelated edits that move it to another line don't make it "new", but changing the flagged code does.
 4. Findings that an earlier pull request from `claude/security-fixes` already covered (open, merged or closed) are skipped. **Closing that pull request is how you say "ignore these"**, like closing a Dependabot update. Run with `force` to triage them again.
 5. Up to `max-findings` of the rest, most severe first, go to Claude. It fixes or suppresses each one, re-runs Semgrep, and runs your `verify-command`.
 6. The changes are committed as `github-actions[bot]` and opened as a pull request with a table of every finding and what was done about it. While it's open, no new security pull request is started; the next batch follows once you merge or close it.
+
+Actions used with a tag (`uses: actions/checkout@v7`) are flagged by Semgrep because a tag can be moved. Claude can't look up commit SHAs, so the action pins these itself: it asks GitHub which commit the tag points to and rewrites the line as `uses: actions/checkout@<sha> # v7`. The comment keeps the version readable and lets Dependabot keep the pin current. This costs no Claude usage. Exclude the rule with `semgrep-exclude-rules` if you'd rather keep tags.
+
+**On pull requests**, only findings on lines the pull request adds or changes count, the same ones GitHub comments on.
+
+- If the pull request is from a branch in this repository, opened by someone in `pull-request-authors` (by default, you), and isn't a draft, Claude fixes those findings and pushes the fix to the pull request's branch (or opens a separate pull request into it, with `pull-request-mode: pull-request`), with one summary comment it keeps up to date. Pins in workflow files are posted as suggested changes you can commit with one click, since `GITHUB_TOKEN` can't push workflow files (a `pr-token` can).
+- Otherwise (forks, other people's pull requests, drafts, or no Claude secret), nothing is changed. The findings are annotated on the changed lines and listed in a comment on the pull request. Pull requests from forks only get a read-only token, so for them the annotations are all there is.
 
 ### Code quality
 
@@ -52,7 +59,7 @@ claude setup-token
 
 A huge repository simply takes more weeks to get through. To go faster, raise `batch-lines` or run the workflow more often.
 
-**On pull requests** (`pull_request` events), Claude looks at the source files the pull request changes, up to `batch-lines`, using the pull request's diff to focus on the new code. With `pull-request-mode: commit` (the default) it pushes a commit to the pull request's branch and leaves one summary comment that it keeps up to date; with `pull-request-mode: pull-request` it opens a separate pull request into your branch instead. It only does this for:
+**On pull requests**, Claude looks at the source files the pull request changes, up to `batch-lines`, using the pull request's diff to focus on the new code. With `pull-request-mode: commit` (the default) it pushes a commit to the pull request's branch and leaves one summary comment that it keeps up to date; with `pull-request-mode: pull-request` it opens a separate pull request into your branch instead. It only does this for:
 
 - pull requests from branches in the same repository (never forks),
 - opened by someone in `pull-request-authors` (by default, the repository owner), so collaborators' pull requests don't spend your usage,
@@ -115,7 +122,7 @@ Outputs: `findings`, `files`, `pull-request-url`, `paused`, `resume-at`, `claude
 
 ## Security notes
 
-- On the default branch, Claude runs from schedules, pushes and manual runs. On pull requests, only quality runs, and only for same-repository pull requests by the people you list.
+- On the default branch, Claude runs from schedules, pushes and manual runs. On pull requests, it only changes same-repository pull requests by the people you list; everyone else's just get a findings comment.
 - Claude gets file tools (read, edit, search) and Bash restricted to a handful of commands: your `verify-command`, the Semgrep re-scan, and read-only `git diff`/`git status`/`git log`. It can't start subagents, browse the web, or push.
 - The action's inputs, `GITHUB_TOKEN` and runner tokens are removed from the environment Claude and your `verify-command` see. Claude can't read `.git/`, and the examples check out with `persist-credentials: false` so no token is left in the checkout.
 - The repository's own `CLAUDE.md` and `.claude/settings.json` are loaded, so whoever can change those can steer Claude. That's normally only you.

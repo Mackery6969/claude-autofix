@@ -1,9 +1,10 @@
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { ActionFailure, booleanInput, eventPayload, fail, input, mask, multilineInput, numberInput, requiredEnv } from "./base/actions.ts";
+import { ActionFailure, booleanInput, fail, input, mask, multilineInput, numberInput, requiredEnv } from "./base/actions.ts";
 import { gitHubFromEnvironment } from "./base/github.ts";
 import type { TaskSettings } from "./base/task.ts";
-import { QualityTask, type PullRequestEvent } from "./tasks/quality.ts";
+import { pullRequestFromEvent, type PullRequestMode } from "./base/pulls.ts";
+import { QualityTask } from "./tasks/quality.ts";
 import { resume } from "./tasks/resume.ts";
 import { SecurityTask } from "./tasks/security.ts";
 import { SOURCE_EXTENSIONS } from "./tasks/sources.ts";
@@ -64,12 +65,17 @@ function securityTask(settings: TaskSettings): SecurityTask {
     maxFindings: numberInput("max-findings", 20),
     sha: requiredEnv("GITHUB_SHA"),
     ref: requiredEnv("GITHUB_REF"),
+    ...pullRequestOptions(),
   });
 }
 
-function qualityTask(settings: TaskSettings): QualityTask {
+function pullRequestOptions(): { pullRequestMode: PullRequestMode; pullRequestAuthors: string[]; pullRequest: ReturnType<typeof pullRequestFromEvent> } {
   const mode = input("pull-request-mode", "commit");
   if (mode !== "commit" && mode !== "pull-request") throw new ActionFailure(`Input pull-request-mode must be commit or pull-request (got "${mode}").`);
+  return { pullRequestMode: mode, pullRequestAuthors: multilineInput("pull-request-authors"), pullRequest: pullRequestFromEvent() };
+}
+
+function qualityTask(settings: TaskSettings): QualityTask {
   const extensions = input("extensions") ? input("extensions").split(/[\s,]+/).filter(Boolean).map((extension) => extension.replace(/^\./, "").toLowerCase()) : SOURCE_EXTENSIONS;
   return new QualityTask(settings, {
     areas: multilineInput("areas"),
@@ -78,9 +84,7 @@ function qualityTask(settings: TaskSettings): QualityTask {
     extensions,
     instructions: input("instructions"),
     batchLines: numberInput("batch-lines", 1500),
-    pullRequestMode: mode,
-    pullRequestAuthors: multilineInput("pull-request-authors"),
-    pullRequest: eventPayload<{ pull_request?: PullRequestEvent }>()?.pull_request,
+    ...pullRequestOptions(),
   });
 }
 

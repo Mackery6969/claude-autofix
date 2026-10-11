@@ -3,21 +3,13 @@ import { join } from "node:path";
 import { log, notice, setOutput } from "../base/actions.ts";
 import { checkoutBranchAt, lastCommitIsFromBot } from "../base/git.ts";
 import { normalizePath, type PathRules } from "../base/paths.ts";
+import { whyNotEligible, type PullRequestEvent, type PullRequestMode } from "../base/pulls.ts";
 import { ClaudeTask, DESCRIPTION_FILE, type ClaudeReport, type Delivery, type Helpers, type PullRequestText, type TaskSettings } from "../base/task.ts";
 import { isSourcePath, listSourceFiles, nextBatch, readSourceFile, takeUpTo, type SourceFile, type SourceScope } from "./sources.ts";
 
 export const CURSOR_TITLE = "code-quality-cursor";
 const DIFF_FILE = ".claude-pr-changes.diff";
 const RUNS_CHECKED_FOR_CURSOR = 10;
-
-export type PullRequestMode = "commit" | "pull-request";
-
-export interface PullRequestEvent {
-  number: number;
-  draft?: boolean;
-  user: { login: string; type: string };
-  head: { ref: string; sha: string; repo: { full_name: string } | null };
-}
 
 export interface QualityOptions {
   areas: string[];
@@ -87,10 +79,8 @@ export class QualityTask extends ClaudeTask<QualityPlan> {
       log(`Not refactoring #${pull.number}: ${reason}.`);
       return undefined;
     };
-    if (pull.head.repo?.full_name !== this.settings.github.repository) return skip("it comes from a fork");
-    if (pull.draft) return skip("it's a draft");
-    if (pull.user.type === "Bot" || pull.head.ref.startsWith("claude/")) return skip("it was opened by a bot");
-    if (!authors.some((author) => author.toLowerCase() === pull.user.login.toLowerCase())) return skip(`only pull requests by ${authors.join(", ")} are refactored (pull-request-authors)`);
+    const ineligible = whyNotEligible(pull, this.settings.github.repository, authors);
+    if (ineligible) return skip(ineligible);
 
     checkoutBranchAt({ ...this.pushOptions, branch: pull.head.ref, sha: pull.head.sha });
     if (lastCommitIsFromBot(this.settings.workspace)) return skip("its latest commit is already Claude's");

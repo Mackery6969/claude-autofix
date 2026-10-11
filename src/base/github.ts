@@ -115,8 +115,32 @@ export class GitHub {
     return this.paginate<Comment>((page) => `/repos/${this.repository}/issues/${number}/comments?per_page=100&page=${page}`, 10);
   }
 
+  async findComment(number: number, marker: string): Promise<Comment | undefined> {
+    return (await this.comments(number)).find((comment) => comment.body?.includes(marker));
+  }
+
+  async commitSha(repository: string, ref: string): Promise<string> {
+    const commit = await this.request<{ sha: string }>("GET", `/repos/${repository}/commits/${encodeURIComponent(ref)}`);
+    return commit.sha;
+  }
+
+  async suggestChanges(number: number, commitId: string, body: string, suggestions: Array<{ path: string; line: number; note: string; replacement: string }>): Promise<void> {
+    if (suggestions.length === 0) return;
+    await this.request("POST", `/repos/${this.repository}/pulls/${number}/reviews`, {
+      commit_id: commitId,
+      event: "COMMENT",
+      body,
+      comments: suggestions.map((suggestion) => ({
+        path: suggestion.path,
+        line: suggestion.line,
+        side: "RIGHT",
+        body: `${suggestion.note}\n\n\`\`\`suggestion\n${suggestion.replacement}\n\`\`\``,
+      })),
+    });
+  }
+
   async upsertComment(number: number, marker: string, body: string): Promise<void> {
-    const existing = (await this.comments(number)).find((comment) => comment.body?.includes(marker));
+    const existing = await this.findComment(number, marker);
     const text = `${body}\n\n${marker}`;
     if (existing) await this.request("PATCH", `/repos/${this.repository}/issues/comments/${existing.id}`, { body: text });
     else await this.request("POST", `/repos/${this.repository}/issues/${number}/comments`, { body: text });

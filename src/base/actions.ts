@@ -38,6 +38,18 @@ export function notice(message: string, title?: string): void {
   process.stdout.write(`::notice${properties}::${escapeData(message)}\n`);
 }
 
+export interface AnnotationLocation {
+  file: string;
+  line: number;
+  endLine: number;
+  title: string;
+}
+
+export function annotate(level: "error" | "warning" | "notice", message: string, location: AnnotationLocation): void {
+  const properties = `file=${escapeProperty(location.file)},line=${location.line},endLine=${location.endLine},title=${escapeProperty(location.title)}`;
+  process.stdout.write(`::${level} ${properties}::${escapeData(message)}\n`);
+}
+
 export function warn(message: string): void {
   process.stdout.write(`::warning::${escapeData(message)}\n`);
 }

@@ -38,8 +38,13 @@ export interface PullRequestText {
 export interface ClaudeReport {
   description: string;
   stoppedEarly: string | undefined;
+  errors: string;
   costUsd: number;
   runUrl: string;
+}
+
+export function commentMarker(task: string): string {
+  return `<!-- claude-autofix:${task} -->`;
 }
 
 export interface Helpers {
@@ -112,6 +117,10 @@ export abstract class ClaudeTask<Plan> {
     return undefined;
   }
 
+  protected needsClaude(_plan: Plan): boolean {
+    return true;
+  }
+
   async run(): Promise<void> {
     const plan = await this.plan();
     if (plan === undefined) return;
@@ -121,30 +130,15 @@ export abstract class ClaudeTask<Plan> {
     const helpers: Helpers = { verify: `bash ${writeHelperScript(tempDirectory, workspace, { name: "verify.sh", body: this.settings.verifyCommand })}` };
     for (const script of this.helperScripts(plan)) helpers[script.name.replace(/\.sh$/, "")] = `bash ${writeHelperScript(tempDirectory, workspace, script)}`;
 
-    const outcome = await runClaude({
-      prompt: this.prompt(plan, helpers),
-      cwd: workspace,
-      model: this.settings.model,
-      maxBudgetUsd: this.settings.maxBudgetUsd,
-      bashCommands: Object.values(helpers),
-      credentials: this.settings.credentials,
-      executable: installClaudeCode(join(tempDirectory, "claude-code")),
-    });
-
-    if (outcome.kind === "limited") {
-      await pauseRun(outcome.limit, { github: this.settings.github, runId: this.settings.runId, resumeWorkflow: this.settings.resumeWorkflow });
-      return;
-    }
-    if (!outcome.result) throw new ActionFailure(`Claude stopped unexpectedly: ${outcome.failure ?? "no result"}`);
+    const report = this.needsClaude(plan) ? await this.askClaude(plan, helpers) : this.reportWithoutClaude();
+    if (!report) return;
     this.finished(plan);
-
-    const report = this.report(outcome.result);
     this.removeScratchFiles();
     this.dropOffLimitsChanges(plan);
 
     if (changedFiles(workspace).length === 0) {
-      if (outcome.result.is_error) throw new ActionFailure(`Claude stopped (${outcome.result.subtype}) without changing anything: ${outcome.result.subtype === "success" ? "" : outcome.result.errors.join("; ")}`);
-      log("Claude made no changes.");
+      if (report.stoppedEarly) throw new ActionFailure(`Claude stopped (${report.stoppedEarly}) without changing anything: ${report.errors}`);
+      log("Nothing was changed.");
       return;
     }
 
@@ -168,7 +162,26 @@ export abstract class ClaudeTask<Plan> {
   protected footer(report: ClaudeReport): string {
     const early = report.stoppedEarly ? `\n\n> Claude stopped early (${report.stoppedEarly}), so this may not cover everything.` : "";
     const verified = this.settings.verifyCommand.trim() ? "verify-command passed." : "No verify-command is set, so nothing was built or tested.";
-    return `${early}\n\n---\n\n${verified} Opened by this [workflow run](${report.runUrl}). Claude usage: $${report.costUsd.toFixed(2)} (API-equivalent).`;
+    const usage = report.costUsd > 0 ? ` Claude usage: $${report.costUsd.toFixed(2)} (API-equivalent).` : "";
+    return `${early}\n\n---\n\n${verified} From this [workflow run](${report.runUrl}).${usage}`;
+  }
+
+  private async askClaude(plan: Plan, helpers: Helpers): Promise<ClaudeReport | undefined> {
+    const outcome = await runClaude({
+      prompt: this.prompt(plan, helpers),
+      cwd: this.settings.workspace,
+      model: this.settings.model,
+      maxBudgetUsd: this.settings.maxBudgetUsd,
+      bashCommands: Object.values(helpers),
+      credentials: this.settings.credentials,
+      executable: installClaudeCode(join(this.settings.tempDirectory, "claude-code")),
+    });
+    if (outcome.kind === "limited") {
+      await pauseRun(outcome.limit, { github: this.settings.github, runId: this.settings.runId, resumeWorkflow: this.settings.resumeWorkflow });
+      return undefined;
+    }
+    if (!outcome.result) throw new ActionFailure(`Claude stopped unexpectedly: ${outcome.failure ?? "no result"}`);
+    return this.report(outcome.result);
   }
 
   private report(result: SDKResultMessage): ClaudeReport {
@@ -180,9 +193,18 @@ export abstract class ClaudeTask<Plan> {
     return {
       description: written || fallback || "Claude didn't write a summary.",
       stoppedEarly: result.is_error ? result.subtype : undefined,
+      errors: result.subtype === "success" ? "" : result.errors.join("; "),
       costUsd: result.total_cost_usd,
-      runUrl: `${this.settings.serverUrl}/${this.settings.github.repository}/actions/runs/${this.settings.runId}`,
+      runUrl: this.runUrl,
     };
+  }
+
+  private reportWithoutClaude(): ClaudeReport {
+    return { description: "", stoppedEarly: undefined, errors: "", costUsd: 0, runUrl: this.runUrl };
+  }
+
+  private get runUrl(): string {
+    return `${this.settings.serverUrl}/${this.settings.github.repository}/actions/runs/${this.settings.runId}`;
   }
 
   private removeScratchFiles(): void {
@@ -215,7 +237,7 @@ export abstract class ClaudeTask<Plan> {
       notice(`${delivery.branch} moved while Claude was working, so nothing was pushed. The next run picks up the new commits.`);
       return;
     }
-    await this.settings.github.upsertComment(delivery.pullRequest, `<!-- claude-autofix:${this.name} -->`, `### ${text.title}\n\n${text.body}`);
+    await this.settings.github.upsertComment(delivery.pullRequest, commentMarker(this.name), `### ${text.title}\n\n${text.body}`);
     log(`Pushed Claude's changes to ${delivery.branch}.`);
     summary(`Pushed to ${delivery.branch} (#${delivery.pullRequest}).`);
   }

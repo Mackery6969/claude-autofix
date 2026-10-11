@@ -70,10 +70,10 @@ inputs:
     description: "quality: roughly how many lines of code one pass covers. Larger passes cost more usage and make bigger pull requests."
     default: "1500"
   pull-request-mode:
-    description: "quality on pull requests: commit (push the changes to the pull request's branch) or pull-request (open a separate pull request into it)."
+    description: "On pull requests: commit (push fixes to the pull request's branch) or pull-request (open a separate pull request into it)."
     default: "commit"
   pull-request-authors:
-    description: "quality on pull requests: only refactor pull requests opened by these users, one per line. Defaults to the repository owner."
+    description: "On pull requests: only let Claude change pull requests opened by these users, one per line. Others get a findings comment. Defaults to the repository owner."
     default: ""
   instructions:
     description: "quality: extra guidance for this repository, added to the prompt."
