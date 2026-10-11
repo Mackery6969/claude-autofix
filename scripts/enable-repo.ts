@@ -44,12 +44,15 @@ function ghOrFail(args: string[], failure: string): string {
   return result.stdout;
 }
 
+function existingFile(path: string): string | undefined {
+  return [path, `${path}.txt`].find((candidate) => existsSync(candidate) && readFileSync(candidate, "utf8").trim() !== "");
+}
+
 function setSecrets(repository: string): void {
   for (const secret of SECRETS) {
-    if (!existsSync(secret.file) || readFileSync(secret.file, "utf8").trim() === "") {
-      throw new SetupError(`${secret.file} is missing or empty. Save the value for ${secret.name} there (see the README).`);
-    }
-    const result = gh(["secret", "set", secret.name, "--repo", repository], readFileSync(secret.file, "utf8").trim());
+    const file = existingFile(secret.file);
+    if (!file) throw new SetupError(`${secret.file} is missing or empty. Save the value for ${secret.name} there (see the README).`);
+    const result = gh(["secret", "set", secret.name, "--repo", repository], readFileSync(file, "utf8").trim());
     if (!result.ok) throw new SetupError(`Couldn't set ${secret.name} on ${repository}.\n${result.stderr}`);
     console.log(`Set ${secret.name}`);
   }
