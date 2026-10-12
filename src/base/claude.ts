@@ -55,14 +55,12 @@ export function installClaudeCode(directory: string): string {
   return executable;
 }
 
-export async function runClaude(run: ClaudeRun): Promise<ClaudeOutcome> {
-  const watcher = new UsageLimitWatcher();
-  let result: SDKResultMessage | undefined;
-  let failure: string | undefined;
+export type TextRun = Omit<ClaudeRun, "bashCommands">;
 
-  const endOutput = startUntrustedOutput("Claude");
-  try {
-    const messages = query({
+export async function runClaude(run: ClaudeRun): Promise<ClaudeOutcome> {
+  return consume(
+    "Claude",
+    query({
       prompt: run.prompt,
       options: {
         cwd: run.cwd,
@@ -78,7 +76,38 @@ export async function runClaude(run: ClaudeRun): Promise<ClaudeOutcome> {
         env: claudeEnvironment(run.credentials),
         stderr: (data) => process.stderr.write(data),
       },
-    });
+    }),
+  );
+}
+
+export async function askClaudeForText(run: TextRun): Promise<ClaudeOutcome> {
+  return consume(
+    "Claude (planning)",
+    query({
+      prompt: run.prompt,
+      options: {
+        cwd: run.cwd,
+        model: run.model,
+        maxBudgetUsd: run.maxBudgetUsd,
+        maxTurns: 1,
+        permissionMode: "dontAsk",
+        tools: [],
+        allowedTools: [],
+        settingSources: [],
+        pathToClaudeCodeExecutable: run.executable,
+        env: claudeEnvironment(run.credentials),
+        stderr: (data) => process.stderr.write(data),
+      },
+    }),
+  );
+}
+
+async function consume(title: string, messages: AsyncIterable<SDKMessage>): Promise<ClaudeOutcome> {
+  const watcher = new UsageLimitWatcher();
+  let result: SDKResultMessage | undefined;
+  let failure: string | undefined;
+  const endOutput = startUntrustedOutput(title);
+  try {
     for await (const message of messages) {
       watcher.observe(message);
       showProgress(message);
@@ -89,7 +118,6 @@ export async function runClaude(run: ClaudeRun): Promise<ClaudeOutcome> {
   } finally {
     endOutput();
   }
-
   const limit = watcher.limit(result, failure, new Date());
   return limit ? { kind: "limited", limit } : { kind: "finished", result, failure };
 }

@@ -67,7 +67,9 @@ Claude's commits, pull requests and comments come from a GitHub App, so they sho
 
 - Any name (it becomes `<name>[bot]`) and any homepage URL.
 - Untick **Webhook → Active**.
-- Repository permissions, read and write: **Actions**, **Code scanning alerts**, **Contents**, **Issues**, **Pull requests**, **Workflows**. **Checks**: read-only. Everything else: no access.
+- Repository permissions, read and write: **Actions**, **Code scanning alerts**, **Contents**, **Dependabot alerts**, **Issues**, **Pull requests**, **Workflows**. **Checks**: read-only. Everything else: no access.
+
+If you created the app before Dependabot alerts were supported, add **Dependabot alerts** (read and write) under **Permissions & events**, then accept the new permission at **Settings → Applications → Installed GitHub Apps → Configure**. Until then, runs skip Dependabot alerts with a warning.
 - **Only on this account.**
 
 Then **Generate a private key**, and **Install App** on **All repositories**. The app does nothing in a repository until that repository's workflows have its key, and installing it everywhere means new repositories need no extra step. Put the app's **Client ID** in the `client-id:` lines of the files in [`examples/`](examples).
@@ -86,7 +88,7 @@ That sets the repository's `CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_APP_PRIVATE_KEY
 
 | Workflow | What it does |
 | --- | --- |
-| [`security.yml`](examples/security.yml) | Runs when a scanner finishes, when an issue is opened, on pull requests and every 6 hours, and has Claude work through new alerts and issues. |
+| [`security.yml`](examples/security.yml) | Runs when a scanner, Dependabot or the dependency graph finishes, when an issue is opened, on pull requests and every 6 hours, and has Claude work through new alerts and issues. |
 | [`code-quality.yml`](examples/code-quality.yml) | A refactoring pass every week, and one when you open a pull request. |
 | [`claude-resume.yml`](examples/claude-resume.yml) | Restarts runs that paused on a usage limit. It switches itself off when nothing is paused. |
 
@@ -104,24 +106,39 @@ Claude finishes each run by writing a description whose first line is a title na
 - the commit subject, as `fix(security): …` or `refactor: …`, with the description as the commit body,
 - the pull request title.
 
-Runs that only pin actions are named for that, like **Pin 2 GitHub Actions to commit SHAs**. When a pull request from one of these branches is merged or closed, the branch is deleted, the same way Dependabot cleans up after itself. Nothing else in the repository is touched: other people's branches stay.
+Runs that only pin actions are named for that, like **Pin 2 GitHub Actions to commit SHAs**. If two changes would get the same branch name, the later one gets `-2`, `-3` and so on, so one pull request never overwrites another. When a pull request from one of these branches is merged or closed, the branch is deleted, the same way Dependabot cleans up after itself. Nothing else in the repository is touched: other people's branches stay.
+
+The workflows don't run on Claude's own pull requests (anything from a `claude/` branch), except for a few seconds when one is closed, to delete its branch. Nothing Claude does starts Claude again: events its app caused (a push to your pull request, the CodeQL run that follows it) are ignored, and comments and reviews never start a run, even if someone adds those triggers to a workflow. Scheduled runs, manual runs and resumes always go ahead.
 
 ### Security
 
 The security task doesn't scan anything itself. It reads what's already there:
 
 - **Open code scanning alerts** from every scanner that reports to the Security tab: CodeQL (including GitHub's default setup), GML Code Scanner, and so on. Limit which scanners count with `code-scanning-tools`.
+- **Open Dependabot alerts** that Dependabot can't fix itself (see below). Turn this off with `dependabot-alerts: false`.
 - **Open issues** labelled with one of `issue-labels` (by default `security`, `critical`, `bug`, `accessibility`, `polishing`, `enhancement`). Issues labelled `question`, `duplicate`, `invalid` or `wontfix` are skipped. On a fork, these are the fork's own issues, never the upstream project's.
 
-It runs as soon as a scanner workflow finishes (`workflow_run`) and whenever an issue is opened, labelled or reopened, plus every 6 hours to catch anything those miss. A run with nothing new finishes in seconds without starting Claude.
+GitHub has no workflow event for a new alert, so it runs as soon as the work that creates alerts finishes (`workflow_run` on CodeQL, other scanners, **Dependabot Updates**, **Dependency Graph** and **Automatic Dependency Submission**) and whenever an issue is opened, labelled or reopened. It also runs every 6 hours to catch the rest, such as a new advisory for a dependency you already have. A run with nothing new finishes in seconds without starting Claude.
 
-1. Everything is ranked: security alerts and `security`/`critical` issues first, by security severity; then other alerts (errors, warnings, notes) and issues (`bug`, then `accessibility`, then the rest).
-2. Anything an earlier security pull request already covered (open, merged or closed), and any issue Claude has already commented on, is skipped. **Closing a pull request is how you say "leave these"**, like closing a Dependabot update. Run with `force` to take them on again.
-3. Up to `max-findings` of the rest go to Claude. For alerts, it fixes real problems with standard library mechanisms, and dismisses false positives (or things not worth changing) on GitHub with a reason. For issues, it looks for the cause and fixes what it can; partial progress is fine. Issue text is treated as a description of a problem only, never as instructions.
-4. Your `verify-command` must pass.
-5. The result is opened as a pull request listing every alert and issue and what was done. It says `Fixes #n` for issues it fully fixed, so merging closes them, and `Refs #n` for the rest. Each issue gets one comment linking the pull request with a short note, and every dismissal is listed with a link so you can reopen it. While the pull request is open, no new security pull request is started.
+1. Anything an earlier security pull request already covers (open, merged or closed), and any issue Claude has already commented on, is skipped. **Closing a pull request is how you say "leave these"**, like closing a Dependabot update. Run with `force` to take them on again.
+2. Claude groups what's left: the same problem flagged in several places goes together, and so do issues about the same bug or part of the project (two reports about flesh blobs, say). This is a quick call to a small model (`grouping-model`, Haiku by default) that only sees a one-line summary of each item. Unpinned actions are always their own group. A group holds at most `max-findings` items.
+3. Groups are worked through in order: security first, by security severity, then everything else (errors, warnings, notes; `bug` issues ahead of `accessibility` ahead of the rest). Each group starts from a clean copy of the default branch and gets its own Claude session, branch and pull request. For alerts, Claude fixes real problems with standard library mechanisms and dismisses false positives (or things not worth changing) on GitHub with a reason. For issues, it looks for the cause and fixes what it can; partial progress is fine. Issue text is treated as a description of a problem only, never as instructions.
+4. Each group's changes must pass your `verify-command`. A group that fails is skipped (and reported) without stopping the others.
+5. Each pull request lists its alerts and issues and what was done. It says `Fixes #n` for issues it fully fixed, so merging closes them, and `Refs #n` for the rest. Each issue gets one comment linking its pull request, and every dismissal is listed with a link so you can reopen it.
+
+A run keeps going until it has been through everything, unless it hits a usage limit (it pauses and picks up where it stopped) or `time-budget-minutes` (the next run carries on).
 
 Fixed alerts close by themselves the next time the scanner runs.
+
+When Claude dismisses GML Code Scanner alerts for a whole folder that shouldn't be scanned (vendored or generated code), it also adds the folder to `.gmlscanignore` in the same pull request, so the scanner stops reporting it.
+
+**Dependabot alerts.** Dependabot opens its own pull requests for alerts with a patched version, so Claude leaves an alert alone while an open Dependabot pull request names its package, and gives Dependabot an hour after a patched alert opens. Everything else (no patched version yet, an update Dependabot couldn't make) goes to Claude with the advisory, and Claude decides:
+
+- **Fix**: raise the dependency to the patched version, or switch to a maintained replacement the advisory names, in a pull request.
+- **Dismiss**: when it doesn't apply, for example a library that comes from the game or platform rather than your project (Minecraft's own `lz4-java` in a mod). The alert is dismissed on GitHub with Claude's reason (`not_used`, `tolerable_risk` or `inaccurate`). If Dependabot could still open update pull requests for it, Claude adds an `ignore` entry to `.github/dependabot.yml` in a pull request. That file only controls Dependabot's pull requests; alerts can't be excluded by a file, which is why the alert itself is dismissed.
+- **Escalate**: when it's real but can't be fixed here (no patched release, a lockfile that needs regenerating, a decision for you). The action opens an issue listing the alerts and what Claude found, so you hear about it.
+
+Every Dependabot alert in a group ends up fixed in a pull request, dismissed, or in an escalation issue, so none is retried forever. Claude's own escalation issues are never treated as issues to work on.
 
 Actions used with a tag (`uses: actions/checkout@v7`) get flagged because a tag can be moved. Claude can't look up commit SHAs, so the action pins these itself: it asks GitHub which commit the tag points to and rewrites the line as `uses: actions/checkout@<sha> # v7`. The comment keeps the version readable and lets Dependabot keep the pin current. This costs no Claude usage.
 
@@ -175,8 +192,11 @@ The action never sleeps in a job waiting for a limit, and Claude can't start sub
 | `force` | `false` | security: triage findings earlier pull requests covered, replacing an open one. quality: start a pass even if the last pull request is still open. |
 | `pr-token` | | A personal access token to push and open pull requests with. A GitHub App (above) does the same job with short-lived tokens. |
 | `resume-workflow` | `claude-resume.yml` | File name of the resume workflow to turn on when a run pauses. |
-| `max-findings` | `20` | security: most alerts and issues taken on in one pull request. |
+| `max-findings` | `10` | security: most alerts and issues in one pull request. Related items are grouped, and a run opens as many pull requests as it needs. |
+| `grouping-model` | `claude-haiku-5-5` | security: the model that groups related items. |
+| `time-budget-minutes` | `300` | Stop starting new groups after this long; the next run picks up the rest. |
 | `issues` | `true` | security: also work on open issues. |
+| `dependabot-alerts` | `true` | security: also triage Dependabot alerts Dependabot can't fix itself: fix, dismiss (with a `dependabot.yml` exclusion where it helps) or escalate in an issue. |
 | `issue-labels` | `security, critical, bug, accessibility, polishing, enhancement` | security: issue labels to work on, most severe first. |
 | `code-scanning-tools` | `all` | security: which scanners' alerts to work on, one per line. `none` works on issues only. |
 | `areas` | whole repository | quality: folders to work through, one per line. |
@@ -198,12 +218,12 @@ Outputs: `files`, `pull-request-url`, `branch`, `paused`, `resume-at`, `claude-c
 | quality | `contents: write`, `pull-requests: write`, `actions: write`, `checks: read` |
 | resume | `actions: write`, `checks: read`, `contents: read` |
 
-`actions: write` lets a paused run cancel itself and turn on the resume workflow. `checks: read` lets the action read the notes it leaves on runs (where a pass stopped, when a pause ends). The GitHub App needs the matching permissions listed in the quick start.
+`security-events` covers both code scanning and Dependabot alerts for `GITHUB_TOKEN`. `actions: write` lets a paused run cancel itself and turn on the resume workflow. `checks: read` lets the action read the notes it leaves on runs (where a pass stopped, when a pause ends). The GitHub App needs the matching permissions listed in the quick start.
 
 ## Security notes
 
 - On the default branch, Claude runs when scanners finish, when issues change, on a schedule and by hand. On pull requests, it only changes same-repository pull requests by the people you list.
-- Anyone can open an issue on a public repository, so issue text reaches Claude as a description of a problem only, and everything still arrives as a pull request you review. Only one security pull request is open at a time, so a flood of issues can't run up your usage.
+- Anyone can open an issue on a public repository, so issue text reaches Claude as a description of a problem only, and everything still arrives as a pull request you review. Issues are only picked up if they carry one of `issue-labels`, and each is handled once, so a flood of unlabelled issues costs nothing.
 - Claude gets file tools (read, edit, search) and Bash restricted to a handful of commands: your `verify-command` and read-only `git diff`/`git status`/`git log`. It can't start subagents, browse the web, or push.
 - The action's inputs, tokens and runner credentials are removed from the environment Claude and your `verify-command` see. Claude can't read `.git/`, and the examples check out with `persist-credentials: false` so no token is left in the checkout.
 - Only branches in your own repository count as Claude's, so a fork can't pass off a branch named `claude/security/...` as an earlier triage.

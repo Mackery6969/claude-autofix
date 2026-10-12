@@ -1,17 +1,40 @@
+import { join } from "node:path";
 import { log, summary, warn } from "../base/actions.ts";
+import { askClaudeForText, installClaudeCode } from "../base/claude.ts";
 import { checkoutBranchAt, lastCommitIsBy } from "../base/git.ts";
+import { pauseRun } from "../base/pause.ts";
 import { isInside, type PathRules } from "../base/paths.ts";
 import { changedLines, touchesChangedLines, whyNotEligible, type PullRequestEvent, type PullRequestMode } from "../base/pulls.ts";
 import { ClaudeTask, commentMarker, commitMessage, DESCRIPTION_FILE, type ClaudeReport, type Delivery, type Helpers, type PullRequestText, type TaskSettings } from "../base/task.ts";
-import { ALERTS_FILE, alertKey, alertRank, dismissAlerts, dismissalInstructions, dismissalsSection, DISMISSALS_FILE, fromScanners, readDismissals, writeAlertsFile, type Alert, type Dismissal, type ScannerFilter } from "./alerts.ts";
+import { ALERTS_FILE, alertKey, dismissAlerts, dismissalInstructions, dismissalsSection, DISMISSALS_FILE, fromScanners, readDismissals, writeAlertsFile, type Alert, type Dismissal, type ScannerFilter } from "./alerts.ts";
+import {
+  DEPENDABOT_FILE,
+  dependabotInstructions,
+  dependabotPullRequests,
+  dependenciesSection,
+  dependencyKey,
+  dismissDependencies,
+  escalationIssue,
+  leftToDependabot,
+  loadDependabotAlerts,
+  needingEscalation,
+  readVerdicts,
+  VERDICTS_FILE,
+  writeDependabotFile,
+  type DependencyAlert,
+  type DependencyVerdict,
+} from "./dependencies.ts";
+import { applyGrouping, byPriority, groupByRule, groupingPrompt, pinGroup, type Group } from "./groups.ts";
 import { actionableIssues, commentOnIssues, issueInstructions, issueKey, issuesAlreadyAnswered, issuesSection, ISSUES_FILE, OUTCOMES_FILE, readOutcomes, writeIssuesFile, type IssueOutcome, type IssueWork } from "./issues.ts";
 import { handledMarker, keysInMarker } from "./markers.ts";
-import { applyPins, resolvePins, type Pin } from "./pins.ts";
+import { applyPins, isUnpinnedAction, resolvePins, type Pin } from "./pins.ts";
 
 export interface SecurityOptions {
   maxFindings: number;
+  groupingModel: string;
   scanners: ScannerFilter;
   handleIssues: boolean;
+  handleDependabot: boolean;
   issueLabels: string[];
   pullRequestMode: PullRequestMode;
   pullRequestAuthors: string[];
@@ -20,22 +43,21 @@ export interface SecurityOptions {
 
 interface SecurityPlan {
   pull: PullRequestEvent | undefined;
-  total: number;
-  pending: number;
+  group: Group;
   alerts: Alert[];
   issues: IssueWork[];
+  dependencies: DependencyAlert[];
   applied: Pin[];
   suggested: Pin[];
   manual: Pin[];
-  handledNow: string[];
   handledBefore: string[];
   dismissed: Dismissal[];
   outcomes: IssueOutcome[];
+  verdicts: DependencyVerdict[];
 }
 
-type Work = { rank: number; alert: Alert; issue?: undefined } | { rank: number; issue: IssueWork; alert?: undefined };
-
 const WORKFLOWS = ".github/workflows";
+const GROUPING_BUDGET_USD = 0.5;
 
 export class SecurityTask extends ClaudeTask<SecurityPlan> {
   protected readonly name = "security";
@@ -46,7 +68,7 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
     this.#options = options;
   }
 
-  protected async plan(): Promise<SecurityPlan | undefined> {
+  protected async plan(): Promise<SecurityPlan[] | undefined> {
     const pull = this.#options.pullRequest;
     if (pull) return this.planPullRequest(pull);
     if (!(await this.onDefaultBranch())) {
@@ -56,32 +78,84 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
 
     const { github, force } = this.settings;
     const alerts = fromScanners(await github.openAlerts(), this.#options.scanners);
-    const issues = this.#options.handleIssues ? actionableIssues(await github.openIssues(), this.#options.issueLabels) : [];
-    summary(`## Open: ${alerts.length} code scanning alert${alerts.length === 1 ? "" : "s"}, ${issues.length} issue${issues.length === 1 ? "" : "s"} to work on`);
-    if (alerts.length === 0 && issues.length === 0) {
-      log("No open code scanning alerts or issues to work on.");
+    const dependencies = this.#options.handleDependabot ? await this.dependabotAlertsForClaude() : [];
+    const issues = this.#options.handleIssues ? actionableIssues(await github.openIssues(), this.#options.issueLabels).filter((issue) => !this.isOwn(issue.author)) : [];
+    if (alerts.length === 0 && dependencies.length === 0 && issues.length === 0) {
+      log("No open code scanning alerts, Dependabot alerts or issues to work on.");
       return undefined;
     }
     if (!this.claudeEnabled) return this.reportClaudeDisabled();
 
-    const pulls = await this.ownPullRequests("all");
-    const open = pulls.find((candidate) => candidate.state === "open");
-    if (open && !force) {
-      log(`Waiting for ${open.html_url} to be merged or closed before taking on more. Run with force to replace it.`);
-      return undefined;
-    }
-    const handled = new Set(force ? [] : pulls.flatMap((candidate) => keysInMarker(candidate.body ?? "")));
+    const handled = force ? new Set<string>() : await this.handledKeys();
     const answered = force ? new Set<number>() : await issuesAlreadyAnswered(github, issues.filter((issue) => !handled.has(issueKey(issue.number))));
     const pendingAlerts = alerts.filter((alert) => !handled.has(alertKey(alert)));
+    const pendingDependencies = dependencies.filter((dependency) => !handled.has(dependencyKey(dependency)));
     const pendingIssues = issues.filter((issue) => !handled.has(issueKey(issue.number)) && !answered.has(issue.number));
-    if (pendingAlerts.length === 0 && pendingIssues.length === 0) {
-      log("Everything open has already been handled by an earlier pull request or issue comment. Run with force to look again.");
+    const pending = pendingAlerts.length + pendingDependencies.length + pendingIssues.length;
+    summary(`## Open: ${count(alerts.length, "code scanning alert")}, ${count(dependencies.length, "Dependabot alert")}, ${count(issues.length, "issue")}; new: ${pending}`);
+    if (pending === 0) {
+      log("Everything open is already covered by a pull request, an issue or an issue comment. Run with force to look again.");
       return undefined;
     }
-    return this.prepare(undefined, pendingAlerts, pendingIssues, alerts.length + issues.length, []);
+
+    const groups = await this.groups(pendingAlerts, pendingIssues, pendingDependencies);
+    if (!groups) return undefined;
+    summary(`Pull requests planned: ${groups.length}\n\n${groups.map((group) => `- ${group.label} (${group.alerts.length + group.dependencies.length + group.issues.length})`).join("\n")}\n`);
+    return groups.map((group) => this.planFor(undefined, group, []));
   }
 
-  private async planPullRequest(pull: PullRequestEvent): Promise<SecurityPlan | undefined> {
+  private async dependabotAlertsForClaude(): Promise<DependencyAlert[]> {
+    const { github } = this.settings;
+    const alerts = await loadDependabotAlerts(github);
+    if (alerts.length === 0) return [];
+    const dependabotPulls = dependabotPullRequests(await github.openPullRequests());
+    const now = new Date();
+    return alerts.filter((alert) => {
+      const reason = leftToDependabot(alert, dependabotPulls, now);
+      if (reason) log(`Leaving Dependabot alert #${alert.number} (${alert.package}) alone: ${reason}.`);
+      return !reason;
+    });
+  }
+
+  private async handledKeys(): Promise<Set<string>> {
+    const pulls = await this.ownPullRequests("all");
+    const escalations = await this.settings.github.issuesCreatedBy(this.settings.author.name).catch((error: unknown) => {
+      warn(`Couldn't list the issues Claude opened, so earlier escalations may be repeated: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    });
+    return new Set([...pulls, ...escalations].flatMap((item) => keysInMarker(item.body ?? "")));
+  }
+
+  private isOwn(login: string): boolean {
+    return login.toLowerCase() === this.settings.author.name.toLowerCase();
+  }
+
+  private async groups(alerts: Alert[], issues: IssueWork[], dependencies: DependencyAlert[]): Promise<Group[] | undefined> {
+    const size = this.#options.maxFindings;
+    const pins = pinGroup(alerts);
+    const rest = alerts.filter((alert) => !isUnpinnedAction(alert));
+    if (rest.length + issues.length + dependencies.length <= 1) return byPriority([...pins, ...groupByRule(rest, issues, size, dependencies)]);
+
+    const { workspace, tempDirectory, credentials } = this.settings;
+    const outcome = await askClaudeForText({
+      prompt: groupingPrompt(rest, issues, size, dependencies),
+      cwd: workspace,
+      model: this.#options.groupingModel,
+      maxBudgetUsd: GROUPING_BUDGET_USD,
+      credentials,
+      executable: installClaudeCode(join(tempDirectory, "claude-code")),
+    });
+    if (outcome.kind === "limited") {
+      await pauseRun(outcome.limit, { github: this.settings.github, runId: this.settings.runId, resumeWorkflow: this.settings.resumeWorkflow });
+      return undefined;
+    }
+    const answer = outcome.result?.subtype === "success" ? outcome.result.result : "";
+    const grouped = applyGrouping(answer, rest, issues, size, dependencies);
+    if (!grouped) warn("Claude's grouping couldn't be read, so alerts are grouped by rule or package, one issue per pull request.");
+    return byPriority([...pins, ...(grouped ?? groupByRule(rest, issues, size, dependencies))]);
+  }
+
+  private async planPullRequest(pull: PullRequestEvent): Promise<SecurityPlan[] | undefined> {
     const { github, workspace } = this.settings;
     const ineligible = whyNotEligible(pull, github.repository, this.pullRequestAuthors);
     if (ineligible) {
@@ -107,69 +181,58 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
       log(`Every alert on #${pull.number}'s changed lines has already been handled.`);
       return undefined;
     }
-    return this.prepare(pull, pending, [], alerts.length, handledBefore);
+    return [this.planFor(pull, { label: `alerts on #${pull.number}`, alerts: pending, issues: [], dependencies: [], rank: 0 }, handledBefore)];
   }
 
-  private async prepare(pull: PullRequestEvent | undefined, pendingAlerts: Alert[], pendingIssues: IssueWork[], total: number, handledBefore: string[]): Promise<SecurityPlan | undefined> {
+  private planFor(pull: PullRequestEvent | undefined, group: Group, handledBefore: string[]): SecurityPlan {
+    return { pull, group, alerts: [], issues: [], dependencies: [], applied: [], suggested: [], manual: [], handledBefore, dismissed: [], outcomes: [], verdicts: [] };
+  }
+
+  protected describe(plan: SecurityPlan): string {
+    return plan.group.label;
+  }
+
+  protected async begin(plan: SecurityPlan): Promise<void> {
     const { github, workspace } = this.settings;
-    const work: Work[] = [...pendingAlerts.map((alert) => ({ rank: alertRank(alert), alert })), ...pendingIssues.map((issue) => ({ rank: issue.rank, issue }))]
-      .sort((a, b) => a.rank - b.rank)
-      .slice(0, this.#options.maxFindings);
-    const batchAlerts = work.flatMap((item) => (item.alert ? [item.alert] : []));
-    const issues = work.flatMap((item) => (item.issue ? [item.issue] : []));
-
-    const pins = await resolvePins(batchAlerts, workspace, (repository, ref) => github.commitSha(repository, ref));
+    const pins = await resolvePins(plan.group.alerts, workspace, (repository, ref) => github.commitSha(repository, ref));
     const locked = this.canEditWorkflows ? [] : pins.filter((pin) => isInside(pin.path, WORKFLOWS));
-    const applied = pins.filter((pin) => !locked.includes(pin));
-    applyPins(applied, workspace);
-    const alerts = batchAlerts.filter((alert) => !pins.some((pin) => pin.alert === alert));
-
-    const plan: SecurityPlan = {
-      pull,
-      total,
-      pending: pendingAlerts.length + pendingIssues.length,
-      alerts,
-      issues,
-      applied,
-      suggested: pull ? locked : [],
-      manual: pull ? [] : locked,
-      handledNow: [...batchAlerts.map(alertKey), ...issues.map((issue) => issueKey(issue.number))],
-      handledBefore,
-      dismissed: [],
-      outcomes: [],
-    };
-    if (pull) await this.suggestPins(pull, plan.suggested);
-    if (alerts.length) writeAlertsFile(workspace, alerts);
-    if (issues.length) writeIssuesFile(workspace, issues);
-    log(`Taking on ${work.length} of ${plan.pending}: ${pins.length} action pin${pins.length === 1 ? "" : "s"} without Claude, ${alerts.length} alert${alerts.length === 1 ? "" : "s"} and ${issues.length} issue${issues.length === 1 ? "" : "s"} for Claude.`);
-
-    if (alerts.length === 0 && issues.length === 0 && applied.length === 0) {
-      if (pull) await github.upsertComment(pull.number, commentMarker(this.name), `### Pin GitHub Actions to commit SHAs\n\n${this.pinsSection(plan)}\n\n${this.marker(plan)}`);
-      else summary(this.pinsSection(plan));
-      return undefined;
-    }
-    return plan;
+    plan.applied = pins.filter((pin) => !locked.includes(pin));
+    plan.suggested = plan.pull ? locked : [];
+    plan.manual = plan.pull ? [] : locked;
+    applyPins(plan.applied, workspace);
+    plan.alerts = plan.group.alerts.filter((alert) => !pins.some((pin) => pin.alert === alert));
+    plan.issues = plan.group.issues;
+    plan.dependencies = plan.group.dependencies;
+    if (plan.pull) await this.suggestPins(plan.pull, plan.suggested);
+    if (plan.alerts.length) writeAlertsFile(workspace, plan.alerts);
+    if (plan.dependencies.length) writeDependabotFile(workspace, plan.dependencies);
+    if (plan.issues.length) writeIssuesFile(workspace, plan.issues);
   }
 
   protected needsClaude(plan: SecurityPlan): boolean {
-    return plan.alerts.length > 0 || plan.issues.length > 0;
+    return plan.alerts.length > 0 || plan.dependencies.length > 0 || plan.issues.length > 0;
   }
 
   protected async finished(plan: SecurityPlan): Promise<void> {
     const { github, workspace } = this.settings;
     if (plan.alerts.length) plan.dismissed = await dismissAlerts(github, readDismissals(workspace, new Set(plan.alerts.map((alert) => alert.number))));
+    if (plan.dependencies.length) plan.verdicts = await dismissDependencies(github, readVerdicts(workspace, new Set(plan.dependencies.map((dependency) => dependency.number))));
     if (plan.issues.length) plan.outcomes = readOutcomes(workspace, new Set(plan.issues.map((issue) => issue.number)));
   }
 
   protected async delivered(plan: SecurityPlan, pullUrl: string | undefined): Promise<void> {
     if (plan.outcomes.length) await commentOnIssues(this.settings.github, plan.outcomes, pullUrl);
+    await this.escalate(plan, pullUrl);
+    if (pullUrl || (!plan.suggested.length && !plan.manual.length)) return;
+    if (plan.pull) await this.settings.github.upsertComment(plan.pull.number, commentMarker(this.name), `### Pin GitHub Actions to commit SHAs\n\n${this.pinsSection(plan)}\n\n${this.marker(plan)}`);
+    else summary(this.pinsSection(plan));
   }
 
   protected prompt(plan: SecurityPlan, helpers: Helpers): string {
     const workflowRule = this.canEditWorkflows
       ? "Files under .github/workflows/ may be edited if an alert is there."
       : 'Do not edit files under .github/workflows/: this run cannot push workflow changes. List alerts there under "Needs a human".';
-    const scope = plan.pull ? `on lines that pull request #${plan.pull.number} adds or changes` : "for this repository";
+    const scope = plan.pull ? `on lines that pull request #${plan.pull.number} adds or changes` : `grouped as "${plan.group.label}"`;
     const sections: string[] = [];
     if (plan.alerts.length) {
       sections.push(`${dismissalInstructions()}
@@ -177,27 +240,33 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
 How to handle the alerts, following the security policy in CLAUDE.md if the repository has one; where it says nothing:
 
 - Real flaw: fix it with the standard, well-tested mechanism for the language or library (parameterized queries, the framework's escaping API, constant-time comparison, argument-list subprocess calls, and so on). Do not write a custom string filter.
-- Vendored or third-party code: do not patch it. Dismiss the alert as "won't fix" if it truly doesn't apply, or list it under "Needs a human".
+- Vendored, generated or third-party code: do not patch it. Dismiss the alert as "won't fix" if it truly doesn't apply, or list it under "Needs a human". When you dismiss alerts from GML Code Scanner for a whole folder that it shouldn't scan, also add that folder to \`.gmlscanignore\` (\`.gitignore\` syntax, patterns relative to the file's folder; next to \`.gmlscan.json\` if there is one, otherwise in the scanned folder), so later scans skip it. Keep any lines already there.
 - Never write a commit SHA, version number, checksum or URL you can't confirm from files in this repository; you have no network access to look them up. If a fix needs one, list the alert under "Needs a human" and say what to look up.
 - ${workflowRule}`);
     }
+    if (plan.dependencies.length) sections.push(dependabotInstructions());
     if (plan.issues.length) sections.push(issueInstructions());
 
-    return `There are ${plan.total} open item(s) ${scope}. This run covers ${plan.alerts.length} code scanning alert(s)${plan.alerts.length ? ` in \`${ALERTS_FILE}\`` : ""} and ${plan.issues.length} issue(s)${plan.issues.length ? ` in \`${ISSUES_FILE}\`` : ""}, at the repository root, most important first. Anything not in these files is out of scope for this run.
+    const covered = [
+      `${plan.alerts.length} code scanning alert(s)${plan.alerts.length ? ` in \`${ALERTS_FILE}\`` : ""}`,
+      `${plan.dependencies.length} Dependabot alert(s)${plan.dependencies.length ? ` in \`${DEPENDABOT_FILE}\`` : ""}`,
+      `${plan.issues.length} issue(s)${plan.issues.length ? ` in \`${ISSUES_FILE}\`` : ""}`,
+    ];
+    return `This run covers ${covered.join(", ")}, at the repository root, ${scope}. They were grouped because they're related, so look for a shared cause or a shared fix. Anything not in these files is out of scope; other groups get their own pull requests.
 
 ${sections.join("\n\n")}
 
-Change only what each item needs. Do not refactor, reformat, or restyle anything else; quality changes are kept apart. Do not start subagents.
+Change only what these items need. Do not refactor, reformat, or restyle anything else; quality changes are kept apart. Do not start subagents.
 
 ${this.toolRules(helpers)}
 
 When you are done:
 1. Run \`${helpers.verify}\`. It must pass. If a fix breaks it and you can't repair the fix, revert that fix and say so.
-2. ${this.descriptionInstructions(plan.alerts.length ? "Escape user input in the build download handler" : "Restore the walking animation for flesh mobs")} After the title: a one-sentence summary, then a table with one row per alert or issue: what it is, file:line or issue number, verdict (Fixed, Partly fixed, Dismissed, or Needs a human), and a one-line reason. Do not commit; the workflow commits your changes.`;
+2. ${this.descriptionInstructions(this.exampleTitle(plan))} After the title: a one-sentence summary, then a table with one row per alert or issue: what it is, file:line, package or issue number, verdict (Fixed, Partly fixed, Dismissed, Escalated, or Needs a human), and a one-line reason. Do not commit; the workflow commits your changes.`;
   }
 
   protected scratchFiles(): string[] {
-    return [ALERTS_FILE, DISMISSALS_FILE, ISSUES_FILE, OUTCOMES_FILE, DESCRIPTION_FILE];
+    return [ALERTS_FILE, DISMISSALS_FILE, DEPENDABOT_FILE, VERDICTS_FILE, ISSUES_FILE, OUTCOMES_FILE, DESCRIPTION_FILE];
   }
 
   protected pathRules(): PathRules {
@@ -211,13 +280,12 @@ When you are done:
   }
 
   protected pullRequest(plan: SecurityPlan, report: ClaudeReport): PullRequestText {
-    const count = plan.handledNow.length;
-    const description = [report.description, this.pinsSection(plan), dismissalsSection(plan.dismissed, plan.alerts), issuesSection(plan.outcomes, plan.issues)].filter(Boolean).join("\n\n");
-    const later = plan.pending > count ? ` The other ${plan.pending - count} follow ${plan.pull ? "on the next run" : "in the next pull request, once this one is merged or closed"}.` : "";
-    const scope = plan.pull ? `This covers ${count} of the ${plan.pending} new alerts on lines this pull request changes.${later}` : `This covers ${count} of the ${plan.pending} open alerts and issues that hadn't been handled yet.${later}`;
+    const items = plan.group.alerts.length + plan.group.dependencies.length + plan.group.issues.length;
+    const description = [report.description, this.pinsSection(plan), dismissalsSection(plan.dismissed, plan.alerts), dependenciesSection(plan.dependencies, plan.verdicts), issuesSection(plan.outcomes, plan.issues)].filter(Boolean).join("\n\n");
+    const scope = plan.pull ? `This covers the ${count(items, "code scanning alert")} on lines this pull request changes.` : `This covers ${count(items, "related item")} (${plan.group.label}). Other groups get their own pull requests.`;
     const ignoring = plan.pull ? "" : " Closing this pull request without merging it marks what it covers as handled.";
     const pinned = plan.applied.length + plan.suggested.length;
-    const fallback = plan.alerts.length === 0 && plan.issues.length === 0 && pinned > 0 ? `Pin ${pinned} GitHub Action${pinned === 1 ? "" : "s"} to commit SHAs` : `Fix ${count} code scanning alert${count === 1 ? "" : "s"} and issue${count === 1 ? "" : "s"}`;
+    const fallback = plan.alerts.length === 0 && plan.dependencies.length === 0 && plan.issues.length === 0 && pinned > 0 ? `Pin ${pinned} GitHub Action${pinned === 1 ? "" : "s"} to commit SHAs` : capitalize(plan.group.label);
     const title = report.title ?? fallback;
     return {
       title,
@@ -231,7 +299,26 @@ When you are done:
   }
 
   private marker(plan: SecurityPlan): string {
-    return handledMarker([...plan.handledBefore, ...plan.handledNow]);
+    return handledMarker([...plan.handledBefore, ...plan.group.alerts.map(alertKey), ...plan.group.dependencies.map(dependencyKey), ...plan.group.issues.map((issue) => issueKey(issue.number))]);
+  }
+
+  private exampleTitle(plan: SecurityPlan): string {
+    if (plan.alerts.length) return "Escape user input in the build download handler";
+    if (plan.dependencies.length) return "Exclude the game's bundled lz4-java from Dependabot";
+    return "Restore the walking animation for flesh mobs";
+  }
+
+  private async escalate(plan: SecurityPlan, pullUrl: string | undefined): Promise<void> {
+    const alerts = needingEscalation(plan.dependencies, plan.verdicts, pullUrl);
+    if (alerts.length === 0) return;
+    const issue = escalationIssue(alerts, plan.verdicts, { pullUrl, runUrl: this.runUrl });
+    try {
+      const created = await this.settings.github.createIssue({ title: issue.title, body: `${issue.body}\n\n${handledMarker(alerts.map(dependencyKey))}`, labels: this.settings.labels });
+      log(`Escalated ${count(alerts.length, "Dependabot alert")} in ${created.html_url}.`);
+      summary(`Escalated ${count(alerts.length, "Dependabot alert")} for a person to decide: ${created.html_url}`);
+    } catch (error) {
+      warn(`Couldn't open an issue for ${count(alerts.length, "Dependabot alert")} that need a person: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private pinsSection(plan: SecurityPlan): string {
@@ -244,6 +331,7 @@ When you are done:
   }
 
   private async suggestPins(pull: PullRequestEvent, pins: Pin[]): Promise<void> {
+    if (pins.length === 0) return;
     try {
       await this.settings.github.suggestChanges(
         pull.number,
@@ -255,4 +343,12 @@ When you are done:
       warn(`Couldn't post the suggested pins: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+}
+
+function count(amount: number, noun: string): string {
+  return `${amount} ${noun}${amount === 1 ? "" : "s"}`;
+}
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }

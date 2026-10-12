@@ -1,6 +1,7 @@
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { ActionFailure, booleanInput, eventPayload, fail, input, mask, multilineInput, numberInput, requiredEnv } from "./base/actions.ts";
+import { ActionFailure, booleanInput, eventPayload, fail, input, mask, multilineInput, notice, numberInput, requiredEnv } from "./base/actions.ts";
+import { triggerEvent, whyIgnored } from "./base/events.ts";
 import { botIdentity, GITHUB_ACTIONS_BOT } from "./base/git.ts";
 import { gitHubFromEnvironment, type GitHub } from "./base/github.ts";
 import { eventAction, pullRequestFromEvent, type PullRequestEvent, type PullRequestMode } from "./base/pulls.ts";
@@ -53,6 +54,8 @@ async function main(): Promise<void> {
   const defaults = CLAUDE_TASKS[task];
   const appSlug = input("app-slug");
   const author = appSlug ? botIdentity(appSlug, await github.botUserId(appSlug)) : GITHUB_ACTIONS_BOT;
+  const ignored = whyIgnored(triggerEvent(), author.name);
+  if (ignored) return notice(`Nothing to do: ${ignored}.`);
   const settings: TaskSettings = {
     workspace: resolve(process.env.GITHUB_WORKSPACE ?? process.cwd()),
     tempDirectory: join(process.env.RUNNER_TEMP ?? tmpdir(), "claude-autofix"),
@@ -76,6 +79,7 @@ async function main(): Promise<void> {
     resumeWorkflow: input("resume-workflow", "claude-resume.yml"),
     author,
     canPushWorkflows: Boolean(prToken || appSlug),
+    timeBudgetMinutes: numberInput("time-budget-minutes", 300),
   };
 
   const runner = task === "security" ? securityTask(settings) : qualityTask(settings);
@@ -90,9 +94,11 @@ function pullRequestMode(): PullRequestMode {
 
 function securityTask(settings: TaskSettings): SecurityTask {
   return new SecurityTask(settings, {
-    maxFindings: numberInput("max-findings", 20),
+    maxFindings: numberInput("max-findings", 10),
+    groupingModel: input("grouping-model", "claude-haiku-5-5"),
     scanners: parseScannerFilter(input("code-scanning-tools", "all")),
     handleIssues: booleanInput("issues", true),
+    handleDependabot: booleanInput("dependabot-alerts", true),
     issueLabels: input("issue-labels") ? multilineInput("issue-labels") : DEFAULT_ISSUE_LABELS,
     pullRequestMode: pullRequestMode(),
     pullRequestAuthors: multilineInput("pull-request-authors"),

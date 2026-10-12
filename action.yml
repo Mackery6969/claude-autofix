@@ -46,10 +46,19 @@ inputs:
     description: "security: which scanners' code scanning alerts to work on (such as CodeQL or GML Code Scanner), one per line. all takes every scanner; none works on issues only."
     default: "all"
   max-findings:
-    description: "security: most alerts and issues Claude takes on in one run. The rest follow in the next pull request."
-    default: "20"
+    description: "security: most alerts and issues in one pull request. Related items are grouped, and a run opens as many pull requests as it needs."
+    default: "10"
+  grouping-model:
+    description: "security: model that groups related alerts and issues into pull requests. A small, cheap model is enough."
+    default: "claude-haiku-5-5"
+  time-budget-minutes:
+    description: "Stop starting new groups after this many minutes; the next run picks up the rest. Keep it below the job's timeout-minutes."
+    default: "300"
   issues:
     description: "security: also work on open issues whose labels are in issue-labels."
+    default: "true"
+  dependabot-alerts:
+    description: "security: also triage open Dependabot alerts that Dependabot can't fix itself: fix, dismiss (adding a dependabot.yml exclusion where it helps) or escalate in an issue. A GitHub App token needs the Dependabot alerts permission."
     default: "true"
   issue-labels:
     description: "security: issue labels to work on, most severe first, one per line. Issues labelled question, duplicate, invalid or wontfix are always skipped."

@@ -24,6 +24,7 @@ concurrency:
 
 jobs:
   quality:
+    if: ${{ !(startsWith(github.head_ref, 'claude/') && github.event.action != 'closed') && !startsWith(github.event.workflow_run.head_branch, 'claude/') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:

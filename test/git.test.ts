@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { botIdentity, changedFiles, commitAll, discardUncommitted, git, GITHUB_ACTIONS_BOT, lastCommitIsBy, restore } from "../src/base/git.ts";
+import { botIdentity, changedFiles, commitAll, currentCommit, discardUncommitted, git, GITHUB_ACTIONS_BOT, lastCommitIsBy, resetTo, restore } from "../src/base/git.ts";
 
 let repo = "";
 
@@ -48,6 +48,18 @@ test("commits onto the bot branch and throws away what verification left behind"
   assert.equal(readFileSync(join(repo, "kept.txt"), "utf8"), "fixed\n");
   assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repo }).trim(), "claude/security-fixes");
   assert.equal(git(["log", "-1", "--format=%an <%ae>|%s"], { cwd: repo }).trim(), "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>|fix(security): triage Semgrep findings");
+});
+
+test("each group starts again from the same commit, without the last group's work", () => {
+  const start = currentCommit(repo);
+  writeFileSync(join(repo, "kept.txt"), "group one\n");
+  writeFileSync(join(repo, "group-one.txt"), "new file\n");
+  commitAll(repo, "claude/security/group-one", "fix(security): group one", GITHUB_ACTIONS_BOT);
+  writeFileSync(join(repo, "stray.txt"), "left over\n");
+  resetTo(repo, start);
+  assert.equal(currentCommit(repo), start);
+  assert.deepEqual(changedFiles(repo), []);
+  assert.equal(readFileSync(join(repo, "kept.txt"), "utf8"), "fixed\n");
 });
 
 test("commits as a GitHub App's bot and recognises its own commits", () => {

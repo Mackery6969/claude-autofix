@@ -2,7 +2,7 @@ name: Security
 
 on:
   workflow_run:
-    workflows: ["CodeQL"]
+    workflows: ["CodeQL", "Automatic Dependency Submission", "Dependency Graph", "Dependabot Updates"]
     types: [completed]
   issues:
     types: [opened, labeled, reopened]
@@ -31,8 +31,9 @@ concurrency:
 
 jobs:
   security:
+    if: ${{ !(startsWith(github.head_ref, 'claude/') && github.event.action != 'closed') && !startsWith(github.event.workflow_run.head_branch, 'claude/') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 355
     env:
       HAS_CLAUDE_APP: ${{ secrets.CLAUDE_APP_PRIVATE_KEY != '' }}
     steps:

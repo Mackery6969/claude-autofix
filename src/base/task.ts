@@ -3,7 +3,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ActionFailure, log, notice, setOutput, summary, untrustedOutput, warn } from "./actions.ts";
 import { hasCredentials, installClaudeCode, runClaude, type Credentials } from "./claude.ts";
-import { changedFiles, commitAll, discardUncommitted, forcePush, git, pushIfUnchanged, restore, type Identity, type PushOptions } from "./git.ts";
+import { changedFiles, commitAll, currentCommit, discardUncommitted, forcePush, git, pushIfUnchanged, resetTo, restore, type Identity, type PushOptions } from "./git.ts";
 import { GitHubError, type GitHub, type PullRequest } from "./github.ts";
 import { pauseRun } from "./pause.ts";
 import { isOffLimits, type PathRules } from "./paths.ts";
@@ -33,6 +33,7 @@ export interface TaskSettings {
   resumeWorkflow: string;
   author: Identity;
   canPushWorkflows: boolean;
+  timeBudgetMinutes: number;
 }
 
 export interface PullRequestText {
@@ -101,7 +102,7 @@ export abstract class ClaudeTask<Plan> {
   }
 
   protected abstract readonly name: string;
-  protected abstract plan(): Promise<Plan | undefined>;
+  protected abstract plan(): Promise<Plan[] | Plan | undefined>;
   protected abstract prompt(plan: Plan, helpers: Helpers): string;
   protected abstract pathRules(plan: Plan): PathRules;
   protected abstract pullRequest(plan: Plan, report: ClaudeReport): Promise<PullRequestText> | PullRequestText;
@@ -116,6 +117,12 @@ export abstract class ClaudeTask<Plan> {
 
   protected delivery(_plan: Plan): Delivery {
     return { kind: "new-pull-request" };
+  }
+
+  protected async begin(_plan: Plan): Promise<void> {}
+
+  protected describe(_plan: Plan): string {
+    return "changes";
   }
 
   protected async finished(_plan: Plan): Promise<void> {}
@@ -181,16 +188,45 @@ export abstract class ClaudeTask<Plan> {
   async run(): Promise<void> {
     if (this.settings.eventName.startsWith("pull_request") && this.settings.eventAction === "closed") return this.deleteClosedPullRequestBranch();
     await this.deleteClosedBranches();
-    const plan = await this.plan();
-    if (plan === undefined) return;
+    const planned = await this.plan();
+    const plans = planned === undefined ? [] : Array.isArray(planned) ? planned : [planned];
+    if (plans.length === 0) return;
     if (!this.claudeEnabled) return this.reportClaudeDisabled();
 
+    const start = currentCommit(this.settings.workspace);
+    const deadline = Date.now() + this.settings.timeBudgetMinutes * 60_000;
+    const failures: string[] = [];
+    for (const [index, plan] of plans.entries()) {
+      if (index > 0) {
+        if (Date.now() > deadline) {
+          notice(`Stopped after ${index} of ${plans.length} groups to stay within time-budget-minutes. The next run picks up the rest.`);
+          break;
+        }
+        resetTo(this.settings.workspace, start);
+      }
+      log(`::group::Group ${index + 1} of ${plans.length}: ${this.describe(plan)}`);
+      try {
+        if ((await this.runUnit(plan)) === "paused") return;
+      } catch (error) {
+        if (plans.length === 1) throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        failures.push(`${this.describe(plan)}: ${message.split("\n")[0]}`);
+        warn(`Group ${index + 1} (${this.describe(plan)}) failed and was skipped: ${message}`);
+      } finally {
+        log("::endgroup::");
+      }
+    }
+    if (failures.length) throw new ActionFailure(`${failures.length} of ${plans.length} groups failed:\n${failures.join("\n")}`);
+  }
+
+  private async runUnit(plan: Plan): Promise<"paused" | "done"> {
     const { workspace, tempDirectory } = this.settings;
+    await this.begin(plan);
     const helpers: Helpers = { verify: `bash ${writeHelperScript(tempDirectory, workspace, { name: "verify.sh", body: this.settings.verifyCommand })}` };
     for (const script of this.helperScripts(plan)) helpers[script.name.replace(/\.sh$/, "")] = `bash ${writeHelperScript(tempDirectory, workspace, script)}`;
 
     const report = this.needsClaude(plan) ? await this.askClaude(plan, helpers) : this.reportWithoutClaude();
-    if (!report) return;
+    if (!report) return "paused";
     await this.finished(plan);
     this.removeScratchFiles();
     this.dropOffLimitsChanges(plan);
@@ -199,12 +235,12 @@ export abstract class ClaudeTask<Plan> {
       if (report.stoppedEarly) throw new ActionFailure(`Claude stopped (${report.stoppedEarly}) without changing anything: ${report.errors}`);
       log("Nothing was changed.");
       await this.delivered(plan, undefined);
-      return;
+      return "done";
     }
 
     const text = await this.pullRequest(plan, report);
     const delivery = this.delivery(plan);
-    const branch = delivery.kind === "new-pull-request" ? `${this.settings.branchPrefix}/${slugify(text.title)}` : delivery.branch;
+    const branch = delivery.kind === "new-pull-request" ? await this.freeBranch(`${this.settings.branchPrefix}/${slugify(text.title)}`) : delivery.branch;
     commitAll(workspace, branch, text.commitMessage, this.settings.author);
     this.verify();
     discardUncommitted(workspace);
@@ -212,15 +248,26 @@ export abstract class ClaudeTask<Plan> {
     if (delivery.kind === "push") {
       await this.pushToPullRequest(delivery, text);
       await this.delivered(plan, `${this.settings.serverUrl}/${this.settings.github.repository}/pull/${delivery.pullRequest}`);
-      return;
+      return "done";
     }
     forcePush({ ...this.pushOptions, branch });
     const pull = await this.openPullRequest(branch, delivery.kind === "pull-request" ? delivery.base : await this.defaultBranch(), text);
     setOutput("pull-request-url", pull.html_url);
     setOutput("branch", branch);
     await this.delivered(plan, pull.html_url);
-    summary(`Pull request: ${pull.html_url}`);
+    summary(`- [${text.title}](${pull.html_url})`);
     log(`Pull request: ${pull.html_url}`);
+    return "done";
+  }
+
+  readonly #usedBranches = new Set<string>();
+
+  private async freeBranch(base: string): Promise<string> {
+    const taken = new Set([...this.#usedBranches, ...(await this.settings.github.branchesStartingWith(base)).map((branch) => branch.name)]);
+    let candidate = base;
+    for (let suffix = 2; taken.has(candidate); suffix++) candidate = `${base}-${suffix}`;
+    this.#usedBranches.add(candidate);
+    return candidate;
   }
 
   private isOwnBranch(name: string): boolean {
@@ -292,7 +339,7 @@ export abstract class ClaudeTask<Plan> {
     return { title: undefined, description: "", stoppedEarly: undefined, errors: "", costUsd: 0, runUrl: this.runUrl };
   }
 
-  private get runUrl(): string {
+  protected get runUrl(): string {
     return `${this.settings.serverUrl}/${this.settings.github.repository}/actions/runs/${this.settings.runId}`;
   }
 

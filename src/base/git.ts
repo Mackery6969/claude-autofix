@@ -54,6 +54,16 @@ export function commitAll(cwd: string, branch: string, message: string, author: 
   git(["-c", `user.name=${author.name}`, "-c", `user.email=${author.email}`, "commit", "--no-verify", "-m", message], { cwd });
 }
 
+export function currentCommit(cwd: string): string {
+  return git(["rev-parse", "HEAD"], { cwd }).trim();
+}
+
+export function resetTo(cwd: string, sha: string): void {
+  git(["checkout", "--quiet", "--detach", sha], { cwd });
+  git(["reset", "--hard", "--quiet", sha], { cwd });
+  git(["clean", "-fdq"], { cwd });
+}
+
 export function discardUncommitted(cwd: string): void {
   git(["reset", "--hard", "--quiet", "HEAD"], { cwd });
   git(["clean", "-fdq"], { cwd });

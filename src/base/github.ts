@@ -14,7 +14,9 @@ export interface PullRequest {
   html_url: string;
   state: "open" | "closed";
   merged_at: string | null;
+  title?: string;
   body: string | null;
+  user?: { login: string } | null;
   head: { ref: string; sha: string; repo: { full_name: string } | null };
 }
 
@@ -35,6 +37,15 @@ export interface CodeScanningAlert {
   rule: { id: string; severity: string | null; security_severity_level: string | null; description: string; tags?: string[] };
   tool: { name: string };
   most_recent_instance: { location: { path: string; start_line: number; end_line: number }; message: { text: string } };
+}
+
+export interface DependabotAlert {
+  number: number;
+  html_url: string;
+  created_at: string;
+  dependency: { package: { ecosystem: string; name: string }; manifest_path: string; scope: string | null; relationship?: string | null };
+  security_advisory: { ghsa_id: string; cve_id: string | null; summary: string; description: string; severity: string; references?: Array<{ url: string }> };
+  security_vulnerability: { vulnerable_version_range: string; first_patched_version: { identifier: string } | null; severity?: string };
 }
 
 export interface Issue {
@@ -171,6 +182,26 @@ export class GitHub {
       if (error instanceof GitHubError && (error.status === 403 || error.status === 404)) return [];
       throw error;
     }
+  }
+
+  dependabotAlerts(): Promise<DependabotAlert[]> {
+    return this.request<DependabotAlert[]>("GET", `/repos/${this.repository}/dependabot/alerts?state=open&sort=created&direction=asc&per_page=100`);
+  }
+
+  async dismissDependabotAlert(number: number, reason: string, comment: string): Promise<void> {
+    await this.request("PATCH", `/repos/${this.repository}/dependabot/alerts/${number}`, { state: "dismissed", dismissed_reason: reason, dismissed_comment: comment });
+  }
+
+  openPullRequests(): Promise<PullRequest[]> {
+    return this.paginate<PullRequest>((page) => `/repos/${this.repository}/pulls?state=open&per_page=100&page=${page}`, 3);
+  }
+
+  issuesCreatedBy(login: string): Promise<Issue[]> {
+    return this.paginate<Issue>((page) => `/repos/${this.repository}/issues?state=all&creator=${encodeURIComponent(login)}&per_page=100&page=${page}`, 3);
+  }
+
+  createIssue(issue: { title: string; body: string; labels: string[] }): Promise<Issue> {
+    return this.request("POST", `/repos/${this.repository}/issues`, issue);
   }
 
   async dismissAlert(number: number, reason: string, comment: string): Promise<void> {
