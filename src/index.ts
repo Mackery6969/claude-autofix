@@ -1,13 +1,14 @@
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { ActionFailure, booleanInput, fail, input, mask, multilineInput, numberInput, requiredEnv } from "./base/actions.ts";
+import { ActionFailure, booleanInput, eventPayload, fail, input, mask, multilineInput, numberInput, requiredEnv } from "./base/actions.ts";
 import { botIdentity, GITHUB_ACTIONS_BOT } from "./base/git.ts";
-import { gitHubFromEnvironment } from "./base/github.ts";
+import { gitHubFromEnvironment, type GitHub } from "./base/github.ts";
+import { eventAction, pullRequestFromEvent, type PullRequestEvent, type PullRequestMode } from "./base/pulls.ts";
 import type { TaskSettings } from "./base/task.ts";
-import { eventAction, pullRequestFromEvent, type PullRequestMode } from "./base/pulls.ts";
+import { parseScannerFilter } from "./tasks/alerts.ts";
+import { DEFAULT_ISSUE_LABELS } from "./tasks/issues.ts";
 import { QualityTask } from "./tasks/quality.ts";
 import { resume } from "./tasks/resume.ts";
-import { parseScannerFilter } from "./tasks/alerts.ts";
 import { SecurityTask } from "./tasks/security.ts";
 import { SOURCE_EXTENSIONS } from "./tasks/sources.ts";
 
@@ -18,8 +19,24 @@ const CLAUDE_TASKS = {
 
 type ClaudeTaskName = keyof typeof CLAUDE_TASKS;
 
+interface WorkflowRunEvent {
+  workflow_run?: { event: string; head_branch: string | null; pull_requests?: Array<{ number: number }> };
+}
+
 function isClaudeTask(name: string): name is ClaudeTaskName {
   return Object.hasOwn(CLAUDE_TASKS, name);
+}
+
+async function pullRequestForRun(github: GitHub): Promise<PullRequestEvent | undefined> {
+  if (process.env.GITHUB_EVENT_NAME !== "workflow_run") return pullRequestFromEvent();
+  const run = eventPayload<WorkflowRunEvent>()?.workflow_run;
+  const number = run?.event.startsWith("pull_request") ? run.pull_requests?.[0]?.number : undefined;
+  return number ? github.pullRequest(number) : undefined;
+}
+
+function triggerBranch(): string {
+  if (process.env.GITHUB_EVENT_NAME === "workflow_run") return eventPayload<WorkflowRunEvent>()?.workflow_run?.head_branch ?? "";
+  return process.env.GITHUB_REF_NAME ?? "";
 }
 
 async function main(): Promise<void> {
@@ -47,8 +64,9 @@ async function main(): Promise<void> {
     runId,
     eventName: process.env.GITHUB_EVENT_NAME ?? "",
     eventAction: eventAction(),
-    pullRequest: pullRequestFromEvent(),
+    pullRequest: task === "security" ? await pullRequestForRun(github) : pullRequestFromEvent(),
     refName: process.env.GITHUB_REF_NAME ?? "",
+    triggerBranch: triggerBranch(),
     model: input("model", defaults.model),
     maxBudgetUsd: numberInput("max-budget-usd", defaults.budget),
     verifyCommand: input("verify-command"),
@@ -64,24 +82,22 @@ async function main(): Promise<void> {
   await runner.run();
 }
 
-function securityTask(settings: TaskSettings): SecurityTask {
-  return new SecurityTask(settings, {
-    semgrepConfig: input("semgrep-config", "p/default p/secrets p/github-actions").split(/\s+/).filter(Boolean),
-    semgrepExcludeRules: input("semgrep-exclude-rules").split(/\s+/).filter(Boolean),
-    semgrepVersion: input("semgrep-version", "1.180.0"),
-    uploadSarif: booleanInput("upload-sarif", true),
-    maxFindings: numberInput("max-findings", 20),
-    sha: requiredEnv("GITHUB_SHA"),
-    ref: requiredEnv("GITHUB_REF"),
-    ...pullRequestOptions(),
-    scanners: parseScannerFilter(input("code-scanning-tools", "all")),
-  });
-}
-
-function pullRequestOptions(): { pullRequestMode: PullRequestMode; pullRequestAuthors: string[]; pullRequest: ReturnType<typeof pullRequestFromEvent> } {
+function pullRequestMode(): PullRequestMode {
   const mode = input("pull-request-mode", "commit");
   if (mode !== "commit" && mode !== "pull-request") throw new ActionFailure(`Input pull-request-mode must be commit or pull-request (got "${mode}").`);
-  return { pullRequestMode: mode, pullRequestAuthors: multilineInput("pull-request-authors"), pullRequest: pullRequestFromEvent() };
+  return mode;
+}
+
+function securityTask(settings: TaskSettings): SecurityTask {
+  return new SecurityTask(settings, {
+    maxFindings: numberInput("max-findings", 20),
+    scanners: parseScannerFilter(input("code-scanning-tools", "all")),
+    handleIssues: booleanInput("issues", true),
+    issueLabels: input("issue-labels") ? multilineInput("issue-labels") : DEFAULT_ISSUE_LABELS,
+    pullRequestMode: pullRequestMode(),
+    pullRequestAuthors: multilineInput("pull-request-authors"),
+    pullRequest: settings.pullRequest,
+  });
 }
 
 function qualityTask(settings: TaskSettings): QualityTask {
@@ -93,7 +109,9 @@ function qualityTask(settings: TaskSettings): QualityTask {
     extensions,
     instructions: input("instructions"),
     batchLines: numberInput("batch-lines", 1500),
-    ...pullRequestOptions(),
+    pullRequestMode: pullRequestMode(),
+    pullRequestAuthors: multilineInput("pull-request-authors"),
+    pullRequest: settings.pullRequest,
   });
 }
 

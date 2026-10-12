@@ -37,6 +37,17 @@ export interface CodeScanningAlert {
   most_recent_instance: { location: { path: string; start_line: number; end_line: number }; message: { text: string } };
 }
 
+export interface Issue {
+  number: number;
+  title: string;
+  body: string | null;
+  html_url: string;
+  created_at: string;
+  user: { login: string } | null;
+  labels: Array<{ name: string } | string>;
+  pull_request?: unknown;
+}
+
 export interface Comment {
   id: number;
   body: string | null;
@@ -143,9 +154,19 @@ export class GitHub {
     await this.request("DELETE", `/repos/${this.repository}/git/refs/heads/${name.split("/").map(encodeURIComponent).join("/")}`);
   }
 
-  async openAlerts(): Promise<CodeScanningAlert[]> {
+  async openIssues(): Promise<Issue[]> {
+    const issues = await this.paginate<Issue>((page) => `/repos/${this.repository}/issues?state=open&sort=created&direction=asc&per_page=100&page=${page}`, 5);
+    return issues.filter((issue) => !issue.pull_request);
+  }
+
+  pullRequest(number: number): Promise<PullRequest & { draft?: boolean; merged?: boolean; user: { login: string; type: string } }> {
+    return this.request("GET", `/repos/${this.repository}/pulls/${number}`);
+  }
+
+  async openAlerts(ref?: string): Promise<CodeScanningAlert[]> {
+    const onRef = ref ? `&ref=${encodeURIComponent(ref)}` : "";
     try {
-      return await this.paginate<CodeScanningAlert>((page) => `/repos/${this.repository}/code-scanning/alerts?state=open&per_page=100&page=${page}`, 10);
+      return await this.paginate<CodeScanningAlert>((page) => `/repos/${this.repository}/code-scanning/alerts?state=open${onRef}&per_page=100&page=${page}`, 10);
     } catch (error) {
       if (error instanceof GitHubError && (error.status === 403 || error.status === 404)) return [];
       throw error;
@@ -272,9 +293,6 @@ export class GitHub {
     await this.request("PUT", `/repos/${this.repository}/actions/workflows/${encodeURIComponent(String(workflow))}/disable`);
   }
 
-  uploadSarif(upload: { commit_sha: string; ref: string; sarif: string; tool_name: string; checkout_uri?: string }): Promise<{ id: string }> {
-    return this.request("POST", `/repos/${this.repository}/code-scanning/sarifs`, upload);
-  }
 }
 
 function errorMessage(body: string): string {

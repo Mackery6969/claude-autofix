@@ -48,12 +48,9 @@ export function isSecurityAlert(alert: CodeScanningAlert): boolean {
   return Boolean(alert.rule.security_severity_level) || (alert.rule.tags ?? []).some((tag) => tag.toLowerCase() === "security");
 }
 
-export function fromOtherScanners(alerts: CodeScanningAlert[], filter: ScannerFilter): Alert[] {
+export function fromScanners(alerts: CodeScanningAlert[], filter: ScannerFilter): Alert[] {
   if (filter.kind === "none") return [];
-  return alerts
-    .filter((alert) => !alert.tool.name.toLowerCase().startsWith("semgrep"))
-    .filter((alert) => filter.kind === "all" || filter.tools.includes(alert.tool.name.toLowerCase()))
-    .map(toAlert);
+  return alerts.filter((alert) => filter.kind === "all" || filter.tools.includes(alert.tool.name.toLowerCase())).map(toAlert);
 }
 
 export function toAlert(alert: CodeScanningAlert): Alert {
@@ -93,7 +90,7 @@ export function writeAlertsFile(cwd: string, alerts: Alert[]): void {
 }
 
 export function dismissalInstructions(): string {
-  return `Findings in \`${ALERTS_FILE}\` come from other scanners (such as GML Code Scanner or CodeQL) and are open alerts on GitHub. Each has a \`kind\`: \`security\` for security problems, \`issue\` for everything else (bugs, performance, maintainability). Fix security alerts properly. For issues, fix what you can with focused changes; it's fine to resolve one only partly, as long as the description says what's left. Fix the real ones. For one that's a false positive, or that isn't worth changing, don't add a suppression comment: add it to \`${DISMISSALS_FILE}\` in the repository root, a JSON array of \`{"alert": <number>, "reason": "false positive" | "won't fix" | "used in tests", "comment": "<why, under ${COMMENT_LIMIT} characters>"}\`. The workflow dismisses those alerts on GitHub after you finish.`;
+  return `Findings in \`${ALERTS_FILE}\` are open code scanning alerts on GitHub, from scanners such as CodeQL or GML Code Scanner. Each has a \`kind\`: \`security\` for security problems, \`issue\` for everything else (bugs, performance, maintainability). Fix security alerts properly. For issues, fix what you can with focused changes; it's fine to resolve one only partly, as long as the description says what's left. Fix the real ones. For one that's a false positive, or that isn't worth changing, don't add a suppression comment: add it to \`${DISMISSALS_FILE}\` in the repository root, a JSON array of \`{"alert": <number>, "reason": "false positive" | "won't fix" | "used in tests", "comment": "<why, under ${COMMENT_LIMIT} characters>"}\`. The workflow dismisses those alerts on GitHub after you finish.`;
 }
 
 export function readDismissals(cwd: string, allowed: Set<number>): Dismissal[] {

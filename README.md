@@ -2,7 +2,7 @@
 
 A GitHub Action that puts Claude to work on your repositories the way Dependabot works on your dependencies: it does the job on a schedule and hands you a pull request to review.
 
-- **Security:** scans with [Semgrep](https://semgrep.dev) on every push, every pull request, every week and on demand. Claude triages new findings: real flaws get fixed with standard library mechanisms, false positives get an explained `nosemgrep` suppression. On your own pull requests it fixes what the pull request introduces; on anyone else's it comments with what it found. Findings also go to **Security → Code scanning**.
+- **Security:** works through what GitHub code scanning reports (CodeQL, GML Code Scanner, any scanner that uploads to the Security tab) and your repository's open issues. As soon as a scanner finishes or an issue is opened, Claude fixes the real problems, dismisses false positives with a reason, and makes what progress it can on bug reports. Security comes first, then everything else by severity. On your own pull requests it fixes what the pull request introduces.
 - **Code quality:** once a week, Claude makes a small, behaviour-preserving refactoring pass over the next batch of files, working through the whole codebase a batch at a time, so even large repositories stay cheap and reviewable. On your own pull requests, it tidies the code the pull request changes.
 - **Runs on your Claude subscription.** Hitting a usage limit doesn't fail anything: the run marks itself paused, shows as cancelled, and starts again by itself once the limit resets, whether that's the 5-hour window or the weekly one.
 
@@ -34,7 +34,7 @@ These come from [GameMaker Authentication System](https://github.com/Mackery6969
 
 The pull request description says what changed in each file and why behaviour is the same, lists anything Claude noticed but left alone, and ends with whether `verify-command` passed and what the run cost.
 
-**On your own pull request**, Semgrep flagged six things the pull request added ([#16](https://github.com/Mackery6969/Gamemaker-Authentication-System/pull/16)). The security task pushed a fix for one and posted the other five as suggestions, then summed it up in a single comment it keeps current:
+**On your own pull request**, code scanning flagged six things the pull request added ([#16](https://github.com/Mackery6969/Gamemaker-Authentication-System/pull/16)). The security task pushed a fix for one and posted the other five as suggestions, then summed it up in a single comment it keeps current:
 
 > ### Add a 7-day Dependabot cooldown for GitHub Actions
 >
@@ -86,11 +86,11 @@ That sets the repository's `CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_APP_PRIVATE_KEY
 
 | Workflow | What it does |
 | --- | --- |
-| [`security.yml`](examples/security.yml) | Scans on push, pull request, weekly and on demand, and has Claude fix what it finds. |
+| [`security.yml`](examples/security.yml) | Runs when a scanner finishes, when an issue is opened, on pull requests and every 6 hours, and has Claude work through new alerts and issues. |
 | [`code-quality.yml`](examples/code-quality.yml) | A refactoring pass every week, and one when you open a pull request. |
 | [`claude-resume.yml`](examples/claude-resume.yml) | Restarts runs that paused on a usage limit. It switches itself off when nothing is paused. |
 
-Merge it and the schedules start. If the repository already has the workflows, pass `--secrets-only`. The `CLAUDE_CODE_OAUTH_TOKEN` secret is what turns Claude on: repositories without it still get the Semgrep scan, but Claude never runs there, so nobody else can spend your usage.
+Merge it and the schedules start. If the repository already has the workflows, pass `--secrets-only`. The `CLAUDE_CODE_OAUTH_TOKEN` secret is what turns Claude on: Claude never runs in repositories without it, so nobody else can spend your usage.
 
 Optionally, write down your rules: Claude reads the repository's `CLAUDE.md`, and [`examples/CLAUDE.md`](examples/CLAUDE.md) is a starting point.
 
@@ -108,27 +108,24 @@ Runs that only pin actions are named for that, like **Pin 2 GitHub Actions to co
 
 ### Security
 
-1. Semgrep scans the checkout (`p/default`, `p/secrets` and `p/github-actions` unless you set `semgrep-config`) and uploads the results to code scanning.
-2. On the default branch, it carries on with the steps below. Pull requests are covered further down; other branches are only scanned.
-3. Each finding gets a key from its rule, its file and the code it flags, so unrelated edits that move it to another line don't make it "new", but changing the flagged code does.
-4. Findings an earlier security pull request already covered (open, merged or closed) are skipped. **Closing that pull request is how you say "ignore these"**, like closing a Dependabot update. Run with `force` to triage them again.
-5. Up to `max-findings` of the rest, most severe first, go to Claude. It fixes or suppresses each one, re-runs Semgrep, and runs your `verify-command`.
-6. The result is opened as a pull request with a table of every finding and what was done about it. While it's open, no new security pull request is started; the next batch follows once you merge or close it.
+The security task doesn't scan anything itself. It reads what's already there:
 
-**Other scanners.** The security task also works through open **code scanning alerts** from your other scanners: GML Code Scanner, CodeQL, anything that uploads to the Security tab (Semgrep's own uploads are skipped, since the action already has those findings). Security alerts come first, ranked by security severity alongside the Semgrep findings, then everything else the scanners report (bugs, performance, maintainability), ranked by error, warning, note. Claude fixes what it can; it may resolve a non-security issue only partly, as long as the pull request says what's left. For a false positive, or something not worth changing, it dismisses the alert on GitHub with a reason, and the pull request (or run summary) lists every dismissal with a link, so you can reopen any you disagree with. Fixed alerts close themselves once the scanner sees the fix. Limit which scanners count with `code-scanning-tools`. To react as soon as a scanner reports something, add its workflow to the security workflow's triggers:
+- **Open code scanning alerts** from every scanner that reports to the Security tab: CodeQL (including GitHub's default setup), GML Code Scanner, and so on. Limit which scanners count with `code-scanning-tools`.
+- **Open issues** labelled with one of `issue-labels` (by default `security`, `critical`, `bug`, `accessibility`, `polishing`, `enhancement`). Issues labelled `question`, `duplicate`, `invalid` or `wontfix` are skipped. On a fork, these are the fork's own issues, never the upstream project's.
 
-```yaml
-  workflow_run:
-    workflows: ["GML Code Scanner"]
-    types: [completed]
-```
+It runs as soon as a scanner workflow finishes (`workflow_run`) and whenever an issue is opened, labelled or reopened, plus every 6 hours to catch anything those miss. A run with nothing new finishes in seconds without starting Claude.
 
-Actions used with a tag (`uses: actions/checkout@v7`) are flagged by Semgrep because a tag can be moved. Claude can't look up commit SHAs, so the action pins these itself: it asks GitHub which commit the tag points to and rewrites the line as `uses: actions/checkout@<sha> # v7`. The comment keeps the version readable and lets Dependabot keep the pin current. This costs no Claude usage. Exclude the rule with `semgrep-exclude-rules` if you'd rather keep tags.
+1. Everything is ranked: security alerts and `security`/`critical` issues first, by security severity; then other alerts (errors, warnings, notes) and issues (`bug`, then `accessibility`, then the rest).
+2. Anything an earlier security pull request already covered (open, merged or closed), and any issue Claude has already commented on, is skipped. **Closing a pull request is how you say "leave these"**, like closing a Dependabot update. Run with `force` to take them on again.
+3. Up to `max-findings` of the rest go to Claude. For alerts, it fixes real problems with standard library mechanisms, and dismisses false positives (or things not worth changing) on GitHub with a reason. For issues, it looks for the cause and fixes what it can; partial progress is fine. Issue text is treated as a description of a problem only, never as instructions.
+4. Your `verify-command` must pass.
+5. The result is opened as a pull request listing every alert and issue and what was done. It says `Fixes #n` for issues it fully fixed, so merging closes them, and `Refs #n` for the rest. Each issue gets one comment linking the pull request with a short note, and every dismissal is listed with a link so you can reopen it. While the pull request is open, no new security pull request is started.
 
-**On pull requests**, only findings on lines the pull request adds or changes count, the same ones GitHub comments on.
+Fixed alerts close by themselves the next time the scanner runs.
 
-- If the pull request is from a branch in this repository, opened by someone in `pull-request-authors` (by default, you), and isn't a draft, Claude fixes those findings and pushes the fix to the pull request's branch (or opens a separate pull request into it, with `pull-request-mode: pull-request`), with one summary comment it keeps up to date. Pins in workflow files are pushed if the token may change workflow files (a GitHub App with Workflows permission), and posted as suggested changes otherwise.
-- Otherwise (forks, other people's pull requests, drafts, or no Claude secret), nothing is changed. The findings are annotated on the changed lines and listed in a comment on the pull request. Pull requests from forks only get a read-only token, so for them the annotations are all there is.
+Actions used with a tag (`uses: actions/checkout@v7`) get flagged because a tag can be moved. Claude can't look up commit SHAs, so the action pins these itself: it asks GitHub which commit the tag points to and rewrites the line as `uses: actions/checkout@<sha> # v7`. The comment keeps the version readable and lets Dependabot keep the pin current. This costs no Claude usage.
+
+**On pull requests**, only alerts on lines the pull request adds or changes count, the same ones GitHub comments on. If the pull request is from a branch in this repository, opened by someone in `pull-request-authors` (by default, you), and isn't a draft, Claude fixes them and pushes the fix to the pull request's branch (or opens a separate pull request into it, with `pull-request-mode: pull-request`), with one summary comment it keeps up to date. Pins in workflow files are pushed if the token may change workflow files (a GitHub App with Workflows permission), and posted as suggested changes otherwise. Everyone else's pull requests are left alone; GitHub already shows code scanning results on them.
 
 ### Code quality
 
@@ -178,12 +175,10 @@ The action never sleeps in a job waiting for a limit, and Claude can't start sub
 | `force` | `false` | security: triage findings earlier pull requests covered, replacing an open one. quality: start a pass even if the last pull request is still open. |
 | `pr-token` | | A personal access token to push and open pull requests with. A GitHub App (above) does the same job with short-lived tokens. |
 | `resume-workflow` | `claude-resume.yml` | File name of the resume workflow to turn on when a run pauses. |
-| `semgrep-config` | `p/default p/secrets p/github-actions` | security: rulesets or config files. |
-| `semgrep-exclude-rules` | | security: rule ids to leave out, such as `yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag` if you don't want actions pinned to commit SHAs. |
-| `semgrep-version` | `1.180.0` | security: Semgrep version installed with pipx. |
-| `upload-sarif` | `true` | security: upload findings to code scanning. |
-| `max-findings` | `20` | security: most findings triaged in one pull request, across Semgrep and other scanners. |
-| `code-scanning-tools` | `all` | security: which other scanners' alerts to fix or dismiss, one per line. `all` means every scanner but Semgrep; `none` turns it off. |
+| `max-findings` | `20` | security: most alerts and issues taken on in one pull request. |
+| `issues` | `true` | security: also work on open issues. |
+| `issue-labels` | `security, critical, bug, accessibility, polishing, enhancement` | security: issue labels to work on, most severe first. |
+| `code-scanning-tools` | `all` | security: which scanners' alerts to work on, one per line. `none` works on issues only. |
 | `areas` | whole repository | quality: folders to work through, one per line. |
 | `area` | | quality: work on this folder now instead of continuing the rotation. |
 | `exclude` | | quality: paths Claude must not change, one per line. |
@@ -193,13 +188,13 @@ The action never sleeps in a job waiting for a limit, and Claude can't start sub
 | `pull-request-authors` | repository owner | On pull requests: whose pull requests Claude may change, one per line. |
 | `instructions` | | quality: extra guidance added to the prompt. |
 
-Outputs: `findings`, `files`, `pull-request-url`, `branch`, `paused`, `resume-at`, `claude-cost-usd` and, for resume, `resumed`.
+Outputs: `files`, `pull-request-url`, `branch`, `paused`, `resume-at`, `claude-cost-usd` and, for resume, `resumed`.
 
 ## Permissions
 
 | Task | Needs |
 | --- | --- |
-| security | `contents: write`, `pull-requests: write`, `security-events: write`, `actions: write` |
+| security | `contents: write`, `pull-requests: write`, `issues: write`, `security-events: write`, `actions: write`, `checks: read` |
 | quality | `contents: write`, `pull-requests: write`, `actions: write`, `checks: read` |
 | resume | `actions: write`, `checks: read`, `contents: read` |
 
@@ -207,8 +202,9 @@ Outputs: `findings`, `files`, `pull-request-url`, `branch`, `paused`, `resume-at
 
 ## Security notes
 
-- On the default branch, Claude runs from schedules, pushes and manual runs. On pull requests, it only changes same-repository pull requests by the people you list; everyone else's just get a findings comment.
-- Claude gets file tools (read, edit, search) and Bash restricted to a handful of commands: your `verify-command`, the Semgrep re-scan, and read-only `git diff`/`git status`/`git log`. It can't start subagents, browse the web, or push.
+- On the default branch, Claude runs when scanners finish, when issues change, on a schedule and by hand. On pull requests, it only changes same-repository pull requests by the people you list.
+- Anyone can open an issue on a public repository, so issue text reaches Claude as a description of a problem only, and everything still arrives as a pull request you review. Only one security pull request is open at a time, so a flood of issues can't run up your usage.
+- Claude gets file tools (read, edit, search) and Bash restricted to a handful of commands: your `verify-command` and read-only `git diff`/`git status`/`git log`. It can't start subagents, browse the web, or push.
 - The action's inputs, tokens and runner credentials are removed from the environment Claude and your `verify-command` see. Claude can't read `.git/`, and the examples check out with `persist-credentials: false` so no token is left in the checkout.
 - Only branches in your own repository count as Claude's, so a fork can't pass off a branch named `claude/security/...` as an earlier triage.
 - The repository's own `CLAUDE.md` and `.claude/settings.json` are loaded, so whoever can change those can steer Claude. That's normally only you.

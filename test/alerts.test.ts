@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import type { CodeScanningAlert } from "../src/base/github.ts";
-import { alertRank, DISMISSALS_FILE, fromOtherScanners, parseScannerFilter, readDismissals } from "../src/tasks/alerts.ts";
+import { alertRank, DISMISSALS_FILE, fromScanners, parseScannerFilter, readDismissals } from "../src/tasks/alerts.ts";
 
 const repo = mkdtempSync(join(tmpdir(), "claude-autofix-alerts-"));
 after(() => rmSync(repo, { recursive: true, force: true }));
@@ -17,15 +17,15 @@ const alert = (number: number, tool: string, overrides: Partial<CodeScanningAler
   most_recent_instance: { location: { path: "scripts/a.gml", start_line: 3, end_line: 3 }, message: { text: "message" } },
 });
 
-test("takes alerts from other scanners and leaves Semgrep's own uploads alone", () => {
+test("takes alerts from every scanner unless told which ones", () => {
   const alerts = [alert(1, "GML Code Scanner"), alert(2, "Semgrep OSS"), alert(3, "CodeQL")];
-  assert.deepEqual(fromOtherScanners(alerts, parseScannerFilter("all")).map((a) => a.number), [1, 3]);
-  assert.deepEqual(fromOtherScanners(alerts, parseScannerFilter("GML Code Scanner")).map((a) => a.number), [1]);
-  assert.deepEqual(fromOtherScanners(alerts, parseScannerFilter("none")), []);
+  assert.deepEqual(fromScanners(alerts, parseScannerFilter("all")).map((a) => a.number), [1, 2, 3]);
+  assert.deepEqual(fromScanners(alerts, parseScannerFilter("GML Code Scanner\nCodeQL")).map((a) => a.number), [1, 3]);
+  assert.deepEqual(fromScanners(alerts, parseScannerFilter("none")), []);
 });
 
 test("security alerts come first, then other issues by severity", () => {
-  const ranked = fromOtherScanners(
+  const ranked = fromScanners(
     [
       alert(1, "GML Code Scanner", { severity: "note", tags: ["performance"] }),
       alert(2, "GML Code Scanner", { severity: "error", tags: ["correctness"] }),

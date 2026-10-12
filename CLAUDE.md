@@ -18,4 +18,4 @@
 ## Checks
 Run `npm run check` (typecheck, tests, build) before committing.
 
-The repository runs itself: `.github/workflows/security.yml` builds `dist/` and uses `./` to scan this code with Semgrep on every push and pull request, and `claude-resume.yml` resumes its own paused runs. If the action breaks, its own scan fails first.
+The repository runs itself: `.github/workflows/security.yml` and `code-quality.yml` build `dist/` and use `./`, so its own code scanning alerts, issues and weekly passes go through the code being changed, and `claude-resume.yml` resumes its own paused runs. If the action breaks, its own runs fail first.

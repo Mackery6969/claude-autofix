@@ -3,19 +3,33 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { applyPins, parseUses, pinnedLine, resolvePins } from "../src/tasks/pins.ts";
-import type { Finding } from "../src/tasks/semgrep.ts";
+import type { Alert } from "../src/tasks/alerts.ts";
+import { applyPins, isUnpinnedAction, parseUses, pinnedLine, resolvePins } from "../src/tasks/pins.ts";
 
 const SHA = "08eba0b27e820071cde6df949e0beb9ba4906955";
 const repo = mkdtempSync(join(tmpdir(), "claude-autofix-pins-"));
 after(() => rmSync(repo, { recursive: true, force: true }));
 
-const mutableTag = (path: string, line: number): Finding => ({
-  check_id: "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+const mutableTag = (path: string, line: number, rule = "actions/unpinned-tag"): Alert => ({
+  number: line,
+  tool: "CodeQL",
+  rule,
+  description: "",
+  severity: "medium",
+  securityLevel: "medium",
+  level: "warning",
+  security: true,
   path,
-  start: { line },
-  end: { line },
-  extra: { message: "", severity: "WARNING" },
+  startLine: line,
+  endLine: line,
+  message: "",
+  url: "",
+});
+
+test("recognises unpinned-action alerts from CodeQL and Semgrep", () => {
+  assert.ok(isUnpinnedAction(mutableTag("a.yml", 1)));
+  assert.ok(isUnpinnedAction(mutableTag("a.yml", 1, "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag")));
+  assert.ok(!isUnpinnedAction(mutableTag("a.yml", 1, "js/xss")));
 });
 
 test("parses uses lines and leaves full SHAs, local and docker actions alone", () => {

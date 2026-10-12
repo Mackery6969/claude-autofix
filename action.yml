@@ -1,10 +1,10 @@
 name: "Claude Autofix"
-description: "Has Claude fix Semgrep security findings and make weekly code-quality passes as Dependabot-style pull requests, pausing on usage limits."
+description: "Has Claude fix code scanning alerts and issues, and make weekly code-quality passes, as Dependabot-style pull requests, pausing on usage limits."
 author: "Mackery"
 
 inputs:
   task:
-    description: "What to do: security (scan with Semgrep and triage findings), quality (one code-quality pass) or resume (restart runs paused by a usage limit)."
+    description: "What to do: security (fix or dismiss open code scanning alerts and work on issues), quality (one code-quality pass) or resume (restart runs paused by a usage limit)."
     required: true
   claude-code-oauth-token:
     description: "Token for your Claude subscription, from `claude setup-token`. Without it (or anthropic-api-key) Claude is off for this repository."
@@ -42,24 +42,18 @@ inputs:
   resume-workflow:
     description: "File name of this repository's resume workflow, turned on when a run pauses."
     default: "claude-resume.yml"
-  semgrep-config:
-    description: "security: Semgrep rulesets or config files, separated by spaces or newlines."
-    default: "p/default p/secrets p/github-actions"
-  semgrep-exclude-rules:
-    description: "security: Semgrep rule ids to leave out, separated by spaces or newlines."
-    default: ""
   code-scanning-tools:
-    description: "security: also fix open code scanning alerts from these scanners (such as GML Code Scanner or CodeQL), one per line. all takes every scanner except Semgrep, which the action runs itself; none turns this off."
+    description: "security: which scanners' code scanning alerts to work on (such as CodeQL or GML Code Scanner), one per line. all takes every scanner; none works on issues only."
     default: "all"
-  semgrep-version:
-    description: "security: Semgrep version to install with pipx when it isn't already on the runner."
-    default: "1.180.0"
-  upload-sarif:
-    description: "security: upload the findings to code scanning."
-    default: "true"
   max-findings:
-    description: "security: most findings Claude triages in one run. The rest follow in the next pull request."
+    description: "security: most alerts and issues Claude takes on in one run. The rest follow in the next pull request."
     default: "20"
+  issues:
+    description: "security: also work on open issues whose labels are in issue-labels."
+    default: "true"
+  issue-labels:
+    description: "security: issue labels to work on, most severe first, one per line. Issues labelled question, duplicate, invalid or wontfix are always skipped."
+    default: "security, critical, bug, accessibility, polishing, enhancement"
   areas:
     description: "quality: folders to work through, one per line. Empty means the whole repository."
     default: ""
@@ -86,8 +80,6 @@ inputs:
     default: ""
 
 outputs:
-  findings:
-    description: "security: number of Semgrep findings."
   files:
     description: "quality: how many files this pass covered."
   pull-request-url:

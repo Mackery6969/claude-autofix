@@ -1,7 +1,7 @@
 {
   "name": "claude-autofix",
-  "version": "1.3.0",
-  "description": "A GitHub Action that has Claude fix Semgrep security findings and make weekly code-quality passes, opening Dependabot-style pull requests and pausing on usage limits.",
+  "version": "2.0.0",
+  "description": "A GitHub Action that has Claude fix code scanning alerts and issues and make weekly code-quality passes, opening Dependabot-style pull requests and pausing on usage limits.",
   "type": "module",
   "private": true,
   "license": "MIT",
@@ -16,7 +16,6 @@
   },
   "keywords": [
     "claude",
-    "semgrep",
     "security",
     "refactoring",
     "code-quality",

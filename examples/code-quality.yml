@@ -40,7 +40,7 @@ jobs:
         with:
           ref: ${{ github.head_ref || github.ref }}
           persist-credentials: false
-      - uses: Mackery6969/Claude-Autofix@v1
+      - uses: Mackery6969/Claude-Autofix@v2
         with:
           task: quality
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

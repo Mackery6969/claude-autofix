@@ -1,13 +1,13 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Finding } from "./semgrep.ts";
+import type { Alert } from "./alerts.ts";
 
-const MUTABLE_TAG_RULE = /github-actions-mutable-action-tag$/;
+const UNPINNED_ACTION_RULES = [/^actions\/unpinned-tag$/, /github-actions-mutable-action-tag$/];
 const USES = /^(?<prefix>\s*(?:-\s+)?uses:\s*)(?<quote>["']?)(?<owner>[\w.-]+)\/(?<repo>[\w.-]+)(?<subpath>\/[^@\s"']*)?@(?<ref>[^\s"'#]+)\k<quote>\s*(?:#.*)?$/;
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
 export interface Pin {
-  finding: Finding;
+  alert: Alert;
   path: string;
   line: number;
   before: string;
@@ -25,8 +25,8 @@ export interface UsesReference {
   ref: string;
 }
 
-export function isMutableTag(finding: Finding): boolean {
-  return MUTABLE_TAG_RULE.test(finding.check_id);
+export function isUnpinnedAction(alert: Alert): boolean {
+  return UNPINNED_ACTION_RULES.some((rule) => rule.test(alert.rule));
 }
 
 export function parseUses(line: string): UsesReference | undefined {
@@ -39,18 +39,18 @@ export function pinnedLine(uses: UsesReference, sha: string): string {
   return `${uses.prefix}${uses.quote}${uses.repository}${uses.subpath}@${sha}${uses.quote} # ${uses.ref}`;
 }
 
-export async function resolvePins(findings: Finding[], cwd: string, commitSha: (repository: string, ref: string) => Promise<string>): Promise<Pin[]> {
+export async function resolvePins(alerts: Alert[], cwd: string, commitSha: (repository: string, ref: string) => Promise<string>): Promise<Pin[]> {
   const shas = new Map<string, Promise<string | undefined>>();
   const pins: Pin[] = [];
-  for (const finding of findings.filter(isMutableTag)) {
-    const before = readLine(cwd, finding.path, finding.start.line);
+  for (const alert of alerts.filter(isUnpinnedAction)) {
+    const before = readLine(cwd, alert.path, alert.startLine);
     const uses = before === undefined ? undefined : parseUses(before);
     if (!uses || before === undefined) continue;
     const key = `${uses.repository}@${uses.ref}`;
     if (!shas.has(key)) shas.set(key, commitSha(uses.repository, uses.ref).catch(() => undefined));
     const sha = await shas.get(key);
     if (!sha || !FULL_SHA.test(sha)) continue;
-    pins.push({ finding, path: finding.path, line: finding.start.line, before, after: pinnedLine(uses, sha), action: `${uses.repository}${uses.subpath}`, ref: uses.ref, sha });
+    pins.push({ alert, path: alert.path, line: alert.startLine, before, after: pinnedLine(uses, sha), action: `${uses.repository}${uses.subpath}`, ref: uses.ref, sha });
   }
   return pins;
 }

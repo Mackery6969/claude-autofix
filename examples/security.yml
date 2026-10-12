@@ -1,22 +1,26 @@
 name: Security
 
 on:
-  push:
-    branches: [main]
+  workflow_run:
+    workflows: ["CodeQL"]
+    types: [completed]
+  issues:
+    types: [opened, labeled, reopened]
   pull_request:
     types: [opened, synchronize, reopened, closed]
   schedule:
-    - cron: "17 6 * * 1"
+    - cron: "17 */6 * * *"
   workflow_dispatch:
     inputs:
       force:
-        description: Triage again even if an earlier pull request covered these findings
+        description: Take everything on again, even what earlier pull requests already covered
         type: boolean
         default: false
 
 permissions:
   contents: write
   pull-requests: write
+  issues: write
   security-events: write
   actions: write
   checks: read
@@ -42,7 +46,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: Mackery6969/Claude-Autofix@v1
+      - uses: Mackery6969/Claude-Autofix@v2
         with:
           task: security
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

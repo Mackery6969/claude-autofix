@@ -23,6 +23,7 @@ export interface TaskSettings {
   eventAction: string;
   pullRequest: PullRequestEvent | undefined;
   refName: string;
+  triggerBranch: string;
   model: string;
   maxBudgetUsd: number;
   verifyCommand: string;
@@ -119,6 +120,8 @@ export abstract class ClaudeTask<Plan> {
 
   protected async finished(_plan: Plan): Promise<void> {}
 
+  protected async delivered(_plan: Plan, _pullUrl: string | undefined): Promise<void> {}
+
   protected needsClaude(_plan: Plan): boolean {
     return true;
   }
@@ -146,8 +149,8 @@ export abstract class ClaudeTask<Plan> {
   }
 
   protected async onDefaultBranch(): Promise<boolean> {
-    if (this.settings.eventName.startsWith("pull_request")) return false;
-    return this.settings.refName === (await this.defaultBranch());
+    if (this.settings.pullRequest || this.settings.eventName.startsWith("pull_request")) return false;
+    return this.settings.triggerBranch === (await this.defaultBranch());
   }
 
   protected ownPullRequests(state: "open" | "all"): Promise<PullRequest[]> {
@@ -195,6 +198,7 @@ export abstract class ClaudeTask<Plan> {
     if (changedFiles(workspace).length === 0) {
       if (report.stoppedEarly) throw new ActionFailure(`Claude stopped (${report.stoppedEarly}) without changing anything: ${report.errors}`);
       log("Nothing was changed.");
+      await this.delivered(plan, undefined);
       return;
     }
 
@@ -207,12 +211,14 @@ export abstract class ClaudeTask<Plan> {
 
     if (delivery.kind === "push") {
       await this.pushToPullRequest(delivery, text);
+      await this.delivered(plan, `${this.settings.serverUrl}/${this.settings.github.repository}/pull/${delivery.pullRequest}`);
       return;
     }
     forcePush({ ...this.pushOptions, branch });
     const pull = await this.openPullRequest(branch, delivery.kind === "pull-request" ? delivery.base : await this.defaultBranch(), text);
     setOutput("pull-request-url", pull.html_url);
     setOutput("branch", branch);
+    await this.delivered(plan, pull.html_url);
     summary(`Pull request: ${pull.html_url}`);
     log(`Pull request: ${pull.html_url}`);
   }
