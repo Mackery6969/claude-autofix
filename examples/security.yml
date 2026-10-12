@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   security:
-    if: ${{ !(startsWith(github.head_ref, 'claude/') && github.event.action != 'closed') && !startsWith(github.event.workflow_run.head_branch, 'claude/') }}
+    if: ${{ ((github.event.action == 'closed' && startsWith(github.head_ref, 'claude/')) || (github.event.action != 'closed' && !startsWith(github.head_ref, 'claude/') && !startsWith(github.event.workflow_run.head_branch, 'claude/'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 355
     env:
@@ -45,6 +45,7 @@ jobs:
           client-id: Iv23lizzdQw7rAtlQQsX
           private-key: ${{ secrets.CLAUDE_APP_PRIVATE_KEY }}
       - uses: actions/checkout@v7
+        if: github.event.action != 'closed'
         with:
           persist-credentials: false
       - uses: Mackery6969/Claude-Autofix@v2

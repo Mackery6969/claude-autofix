@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   security:
-    if: ${{ !(startsWith(github.head_ref, 'claude/') && github.event.action != 'closed') && !startsWith(github.event.workflow_run.head_branch, 'claude/') }}
+    if: ${{ ((github.event.action == 'closed' && startsWith(github.head_ref, 'claude/')) || (github.event.action != 'closed' && !startsWith(github.head_ref, 'claude/') && !startsWith(github.event.workflow_run.head_branch, 'claude/'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 355
     env:
