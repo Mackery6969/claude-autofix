@@ -33,17 +33,17 @@ jobs:
     env:
       HAS_CLAUDE_APP: ${{ secrets.CLAUDE_APP_PRIVATE_KEY != '' }}
     steps:
-      - uses: actions/create-github-app-token@v3
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         id: app
         if: env.HAS_CLAUDE_APP == 'true' && github.event_name != 'pull_request'
         continue-on-error: true
         with:
           client-id: Iv23lizzdQw7rAtlQQsX
           private-key: ${{ secrets.CLAUDE_APP_PRIVATE_KEY }}
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           cache: npm
