@@ -1,0 +1,52 @@
+name: __TITLE__
+run-name: "${{ inputs.repository }}${{ (inputs.pull-request || inputs.issue) && format(' #{0}', inputs.pull-request || inputs.issue) || (inputs.ref && format(' · {0}', inputs.ref) || '') }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Repository to work on (owner/name)
+        required: true
+      ref:
+        description: Branch (leave empty for the default branch; any other branch gets only what differs from it)
+        default: ""
+      pull-request:
+        description: Pull request number
+        default: ""
+      issue:
+        description: Issue number (conversations)
+        default: ""
+      sha:
+        description: Commit of the branch (set by the hub)
+        default: ""
+      before:
+        description: The commit before a push, to scan only what it changed (set by the hub)
+        default: ""
+      sender:
+        description: Who made the change (set by the hub)
+        default: ""
+      cursor:
+        description: Where the last pass stopped (set by the hub)
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ inputs.repository }}-__TASK__-${{ inputs.pull-request || inputs.issue || inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  __TASK__:
+    uses: ./.github/workflows/claude-autofix.yml
+    with:
+      task: __TASK__
+      repository: ${{ inputs.repository }}
+      ref: ${{ inputs.ref }}
+      sha: ${{ inputs.sha }}
+      before: ${{ inputs.before }}
+      pull-request: ${{ inputs.pull-request }}
+      issue: ${{ inputs.issue }}
+      sender: ${{ inputs.sender || (!endsWith(github.actor, '[bot]') && github.actor || '') }}
+      cursor: ${{ inputs.cursor }}
+    secrets: inherit

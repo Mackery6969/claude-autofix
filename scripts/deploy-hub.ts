@@ -1,4 +1,4 @@
-import { ACTION_REPOSITORY, deployWorker, putWorkerSecrets, RUNNER_WORKFLOW, setOnRepository, SetupError, writeRunnerWorkflow } from "./hub-deploy.ts";
+import { ACTION_REPOSITORY, deployWorker, putWorkerSecrets, setOnRepository, SetupError, writeRunnerWorkflows } from "./hub-deploy.ts";
 
 function setting(name: string): string {
   const value = process.env[name]?.trim();
@@ -16,10 +16,11 @@ try {
   console.log("Set the hub's secrets");
 
   try {
-    console.log(writeRunnerWorkflow(runner) ? `Updated ${RUNNER_WORKFLOW} in ${runner}` : `${runner} already has the current runner workflow`);
+    const updated = writeRunnerWorkflows(runner);
+    console.log(updated.length ? `Updated ${updated.join(", ")} in ${runner}` : `${runner} already has the current runner workflows`);
   } catch (error) {
     if (!(error instanceof SetupError)) throw error;
-    console.log(`::notice title=Runner workflow not updated::${error.message}`);
+    console.log(`::notice title=Runner workflows not updated::${error.message}`);
   }
   setOnRepository(runner, { CLAUDE_CODE_OAUTH_TOKEN: setting("CLAUDE_CODE_OAUTH_TOKEN"), CLAUDE_APP_PRIVATE_KEY: appKey, CLAUDE_AUTOFIX_HUB_SECRET: hubSecret }, { CLAUDE_APP_CLIENT_ID: setting("CLAUDE_APP_CLIENT_ID"), CLAUDE_AUTOFIX_HUB_URL: url });
   setOnRepository(ACTION_REPOSITORY, {}, { CLAUDE_AUTOFIX_HUB_URL: url });

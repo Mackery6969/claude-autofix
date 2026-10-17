@@ -2,12 +2,14 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { TASKS } from "../src/base/settings.ts";
 
 export const ACTION_REPOSITORY = "Mackery6969/Claude-Autofix";
-export const RUNNER_WORKFLOW = ".github/workflows/claude-autofix.yml";
+const RUNNER_WORKFLOWS = ".github/workflows";
 const WRANGLER = ["--yes", "wrangler@4"];
 const WRANGLER_CONFIG = new URL("../worker/wrangler.jsonc", import.meta.url).pathname;
 const RUNNER_TEMPLATE = new URL("../examples/runner.yml", import.meta.url);
+const RUNNER_TASK_TEMPLATE = new URL("../examples/runner-task.yml", import.meta.url);
 
 export class SetupError extends Error {}
 
@@ -70,16 +72,27 @@ export function releasedActionVersion(workflow: string): string | undefined {
   return run("gh", ["api", `repos/${ACTION_REPOSITORY}/git/ref/tags/${version}`, "--silent"]).ok ? version : undefined;
 }
 
-export function writeRunnerWorkflow(runner: string): boolean {
-  const content = readFileSync(RUNNER_TEMPLATE, "utf8");
-  if (!releasedActionVersion(content)) throw new SetupError(`The runner workflow uses a version of ${ACTION_REPOSITORY} that isn't released yet, so ${runner} keeps its current workflow. The release deploys it.`);
-  const existing = run("gh", ["api", `repos/${runner}/contents/${RUNNER_WORKFLOW}`, "--jq", ".sha + \" \" + .content"]);
-  const [sha, ...encoded] = existing.ok ? existing.stdout.split(" ") : [];
-  if (sha && Buffer.from(encoded.join("").replace(/\\n|\s/g, ""), "base64").toString("utf8") === content) return false;
-  const fields = ["-f", "message=Update the Claude Autofix runner workflow", "-f", `content=${Buffer.from(content).toString("base64")}`, ...(sha ? ["-f", `sha=${sha}`] : [])];
-  const result = run("gh", ["api", "-X", "PUT", `repos/${runner}/contents/${RUNNER_WORKFLOW}`, ...fields, "--silent"]);
-  if (!result.ok) throw new SetupError(`Couldn't write ${RUNNER_WORKFLOW} to ${runner}. The app needs the Workflows permission.\n${result.stderr}`);
-  return true;
+export function runnerWorkflows(): Record<string, string> {
+  const template = readFileSync(RUNNER_TASK_TEMPLATE, "utf8");
+  const workflows: Record<string, string> = { [`${RUNNER_WORKFLOWS}/claude-autofix.yml`]: readFileSync(RUNNER_TEMPLATE, "utf8") };
+  for (const task of TASKS) workflows[`${RUNNER_WORKFLOWS}/${task}.yml`] = template.replaceAll("__TITLE__", task[0].toUpperCase() + task.slice(1)).replaceAll("__TASK__", task);
+  return workflows;
+}
+
+export function writeRunnerWorkflows(runner: string): string[] {
+  const workflows = runnerWorkflows();
+  if (!releasedActionVersion(Object.values(workflows)[0])) throw new SetupError(`The runner workflow uses a version of ${ACTION_REPOSITORY} that isn't released yet, so ${runner} keeps its current workflows. The release deploys them.`);
+  const updated: string[] = [];
+  for (const [path, content] of Object.entries(workflows)) {
+    const existing = run("gh", ["api", `repos/${runner}/contents/${path}`, "--jq", ".sha + \" \" + .content"]);
+    const [sha, ...encoded] = existing.ok ? existing.stdout.split(" ") : [];
+    if (sha && Buffer.from(encoded.join("").replace(/\\n|\s/g, ""), "base64").toString("utf8") === content) continue;
+    const fields = ["-f", `message=Update the Claude Autofix runner workflow ${path}`, "-f", `content=${Buffer.from(content).toString("base64")}`, ...(sha ? ["-f", `sha=${sha}`] : [])];
+    const result = run("gh", ["api", "-X", "PUT", `repos/${runner}/contents/${path}`, ...fields, "--silent"]);
+    if (!result.ok) throw new SetupError(`Couldn't write ${path} to ${runner}. The app needs the Workflows permission.\n${result.stderr}`);
+    updated.push(path);
+  }
+  return updated;
 }
 
 export function setOnRepository(repository: string, secrets: Record<string, string>, variables: Record<string, string>): void {

@@ -11,7 +11,6 @@ export interface Env {
   APP_CLIENT_ID: string;
   APP_SLUG: string;
   RUNNER_REPOSITORY: string;
-  RUNNER_WORKFLOW: string;
   RUNNER_REF: string;
   PERMITTED_OWNERS: string;
   IGNORED_REPOSITORIES: string;
@@ -228,9 +227,9 @@ class Hub {
       sha ||= commit.sha;
       sender ||= commit.author?.login ?? commit.committer?.login ?? "";
     }
-    const inputs: Record<string, string> = { repository: job.repository, task: job.task, ref: job.ref, sha, before: job.before ?? "", "pull-request": job.pullRequest ? String(job.pullRequest) : "", issue: job.issue ? String(job.issue) : "", sender };
+    const inputs: Record<string, string> = { repository: job.repository, ref: job.ref, sha, before: job.before ?? "", "pull-request": job.pullRequest ? String(job.pullRequest) : "", issue: job.issue ? String(job.issue) : "", sender };
     if ((job.task === "quality" || job.task === "scan") && onDefaultBranch && !job.before) inputs.cursor = await this.state.cursor(job.repository, job.task);
-    await this.app.as(runnerInstallation, "POST", `/repos/${this.env.RUNNER_REPOSITORY}/actions/workflows/${encodeURIComponent(this.env.RUNNER_WORKFLOW)}/dispatches`, { ref: this.env.RUNNER_REF || "main", inputs });
+    await this.app.as(runnerInstallation, "POST", `/repos/${this.env.RUNNER_REPOSITORY}/actions/workflows/${job.task}.yml/dispatches`, { ref: this.env.RUNNER_REF || "main", inputs });
   }
 
   async report(report: HubReport, now: number): Promise<Response> {

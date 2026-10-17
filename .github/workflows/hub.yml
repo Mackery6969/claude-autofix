@@ -8,6 +8,7 @@ on:
       - "scripts/hub-deploy.ts"
       - "scripts/deploy-hub.ts"
       - "examples/runner.yml"
+      - "examples/runner-task.yml"
       - ".github/workflows/hub.yml"
   workflow_dispatch:
   workflow_call:

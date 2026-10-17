@@ -9,7 +9,6 @@
     "APP_CLIENT_ID": "",
     "APP_SLUG": "",
     "RUNNER_REPOSITORY": "",
-    "RUNNER_WORKFLOW": "claude-autofix.yml",
     "RUNNER_REF": "main",
     "PERMITTED_OWNERS": "",
     "IGNORED_REPOSITORIES": ""

@@ -7,7 +7,7 @@ const USAGE = `Usage:
   node scripts/hub.ts sync
   node scripts/hub.ts permit owner/repo
   node scripts/hub.ts revoke owner/repo
-  node scripts/hub.ts run owner/repo [security|quality] [branch]`;
+  node scripts/hub.ts run owner/repo [security|fix|scan|quality] [branch]`;
 
 async function main(): Promise<void> {
   const [action, repository, task, ref] = process.argv.slice(2);

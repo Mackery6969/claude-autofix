@@ -1,44 +1,38 @@
 name: Claude Autofix
-run-name: "${{ inputs.task }} · ${{ inputs.repository }}${{ (inputs.pull-request || inputs.issue) && format(' #{0}', inputs.pull-request || inputs.issue) || format(' · {0}', inputs.ref) }}"
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      repository:
-        description: Repository to work on (owner/name)
-        required: true
       task:
-        description: security, fix, scan, quality or conversation
+        type: string
         required: true
-        default: security
+      repository:
+        type: string
+        required: true
       ref:
-        description: Branch (the default branch gets the scheduled work; any other branch only what differs from it)
+        type: string
         default: ""
       sha:
-        description: Commit of ref
+        type: string
         default: ""
       before:
-        description: The commit before a push (scan only what it changed)
+        type: string
         default: ""
       pull-request:
-        description: Pull request number
+        type: string
         default: ""
       issue:
-        description: Issue number (conversations)
+        type: string
         default: ""
       sender:
-        description: Who made the change
+        type: string
         default: ""
       cursor:
-        description: Where the last quality pass stopped
+        type: string
         default: ""
 
 permissions:
   contents: read
-
-concurrency:
-  group: ${{ inputs.repository }}-${{ inputs.task }}-${{ inputs.pull-request || inputs.issue || inputs.ref }}
-  cancel-in-progress: false
 
 jobs:
   run:

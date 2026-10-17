@@ -60,7 +60,7 @@ The pull request description says what changed in each file and why behaviour is
 | --- | --- | --- |
 | GitHub App | Your account | Gives Claude its own identity and access to the repositories you install it on, and sends their events to the hub. |
 | Hub | A Cloudflare Worker ([`worker/`](worker)) | Receives the app's webhooks, queues work, runs the schedules, and keeps what little state there is: where each quality pass stopped, and one usage-limit pause shared by every repository (they all spend the same subscription). |
-| Runner | A private repository of yours, with [`examples/runner.yml`](examples/runner.yml) | The hub dispatches jobs to it. Each job gets a token for one repository, checks it out and runs this action. Claude's token, the app key and every run's logs stay in this one private repository. |
+| Runner | A private repository of yours, with [`examples/runner.yml`](examples/runner.yml) and a workflow per task made from [`examples/runner-task.yml`](examples/runner-task.yml) | The hub dispatches jobs to it. Each job gets a token for one repository, checks it out and runs this action. Claude's token, the app key and every run's logs stay in this one private repository. |
 
 Nothing is committed to the repositories it works on, and every part is deployed from this repository, so an update reaches all of them at once.
 
@@ -75,6 +75,8 @@ node scripts/hub.ts revoke someone/their-project   # stop, and drop anything que
 ```
 
 These commands are signed with an admin secret that only your machine and the hub have.
+
+You can also run a task straight from the runner repository's **Actions** tab: each task (Security, Fix, Scan, Quality, Conversation) is its own workflow there, so you can filter runs by task and press **Run workflow** on one. Give it a repository, and optionally a branch, pull request or issue. Unlike `hub.ts run`, it starts right away, even while the hub is paused for a usage limit, and a Scan run started this way begins a new lap from the start of the project.
 
 ## Setting it up
 

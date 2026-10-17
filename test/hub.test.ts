@@ -4,7 +4,8 @@ import { test } from "node:test";
 import { sign } from "../src/base/hub.ts";
 import { appJwt, pkcs8FromPem } from "../worker/src/github.ts";
 import { ALERT_SETTLE_MS, CHECKS_SETTLE_MS, CONVERSATION_SETTLE_MS, DEPENDABOT_GRACE_MS, effectsOf, jobKey, mergeJobs, type Job, type WebhookPayload } from "../worker/src/routing.ts";
-import { hubSettings, parseConfig } from "../src/base/settings.ts";
+import { hubSettings, parseConfig, TASKS } from "../src/base/settings.ts";
+import { runnerWorkflows } from "../scripts/hub-deploy.ts";
 import { dueJobs, newRecord, scheduledWork } from "../worker/src/schedule.ts";
 import { verifySignature } from "../worker/src/signatures.ts";
 import { State, type KeyValueStore } from "../worker/src/state.ts";
@@ -250,4 +251,15 @@ test("the app's JWT is signed with its RSA key, in the PKCS#1 form GitHub hands 
   const [header = "", claims = "", signature = ""] = jwt.split(".");
   assert.deepEqual(JSON.parse(Buffer.from(claims, "base64url").toString()), { iat: now / 1000 - 60, exp: now / 1000 - 60 + 540, iss: "Iv23test" });
   assert.ok(createVerify("RSA-SHA256").update(`${header}.${claims}`).verify(publicKey, Buffer.from(signature, "base64url")));
+});
+
+test("the runner gets one workflow per task, each calling the shared one", () => {
+  const workflows = runnerWorkflows();
+  assert.deepEqual(Object.keys(workflows), [".github/workflows/claude-autofix.yml", ...TASKS.map((task) => `.github/workflows/${task}.yml`)]);
+  assert.match(workflows[".github/workflows/claude-autofix.yml"], /workflow_call:/);
+  const scan = workflows[".github/workflows/scan.yml"];
+  assert.match(scan, /^name: Scan$/m);
+  assert.match(scan, /task: scan$/m);
+  assert.match(scan, /uses: \.\/\.github\/workflows\/claude-autofix\.yml/);
+  assert.doesNotMatch(Object.values(workflows).join("\n"), /__TASK__|__TITLE__/);
 });
