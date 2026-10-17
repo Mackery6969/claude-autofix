@@ -81,7 +81,7 @@ node scripts/hub.ts revoke someone/their-project   # stop, and drop anything que
 
 These commands are signed with an admin secret that only your machine and the hub have.
 
-You can also run a task from a repository's own **Actions** tab: pick its workflow, such as **Claude Code Scanning**, then **Run workflow**, optionally with a branch, pull request or issue. Unlike `hub.ts run`, it starts right away, even while the hub is paused for a usage limit. Scan and quality runs started this way carry on from where the last pass stopped. If one hits a session or weekly limit, the hub starts it again once the limit resets, like any other run.
+You can also run a task from a repository's own **Actions** tab: pick its workflow, such as **Claude Code Scanning**, then **Run workflow**. Choose the branch with **Use workflow from**, or give a pull request number (for **Claude Conversations**, a pull request or issue number). Leave the **hub** field empty; it's how the hub passes its jobs in. Both kinds of run go through the same workflow and the same hub. Only their names differ: the hub's runs say why they started ("Pull request #3", "Push to main", "Sweep of main"), and yours say "Run by <you> · …". A run you start and one the hub starts for the same branch or pull request take turns. Unlike `hub.ts run`, it starts right away, even while the hub is paused for a usage limit. Scan and quality runs started this way carry on from where the last pass stopped. If one hits a session or weekly limit, the hub starts it again once the limit resets, like any other run.
 
 ## Setting it up
 

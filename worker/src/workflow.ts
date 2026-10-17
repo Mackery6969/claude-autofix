@@ -11,33 +11,30 @@ export const TASK_WORKFLOWS: Record<TaskName, { file: string; name: string }> = 
   conversation: { file: "claude-conversation.yml", name: "Claude Conversations" },
 };
 
+export const WORKFLOW_INPUT = "number";
+
+const NUMBER_INPUT: Record<TaskName, string> = {
+  security: "Pull request number (optional; leave empty to work on the branch above)",
+  fix: "Pull request number (optional; leave empty to work on the branch above)",
+  scan: "Pull request number (optional; leave empty to scan the branch above)",
+  quality: "Pull request number (optional; leave empty to work on the branch above)",
+  conversation: "Pull request or issue number",
+};
+
 export function workflowFile(task: TaskName, actionRepository: string, version: string, hubUrl: string): string {
+  const job = "fromJSON(inputs.hub || '{}')";
   return `name: ${TASK_WORKFLOWS[task].name}
-run-name: "\${{ inputs.pull-request && format('Pull request #{0}', inputs.pull-request) || inputs.issue && format('Issue #{0}', inputs.issue) || inputs.ref || github.ref_name }}"
+run-name: "\${{ ${job}.label || format('Run by {0} · {1}', github.actor, inputs.number && format('#{0}', inputs.number) || github.ref_name) }}"
 
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: Branch (leave empty for the default branch; any other branch gets only what differs from it)
+      number:
+        description: ${NUMBER_INPUT[task]}
+        required: ${task === "conversation"}
         default: ""
-      pull-request:
-        description: Pull request number
-        default: ""
-      issue:
-        description: Issue number
-        default: ""
-      sha:
-        description: Commit of the branch (set by the hub)
-        default: ""
-      before:
-        description: The commit before a push, to scan only what it changed (set by the hub)
-        default: ""
-      sender:
-        description: Who made the change (set by the hub)
-        default: ""
-      cursor:
-        description: Where the last pass stopped (set by the hub)
+      hub:
+        description: Leave empty (the hub fills this in)
         default: ""
 
 permissions:
@@ -45,7 +42,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: claude-${task}-\${{ inputs.pull-request || inputs.issue || inputs.ref }}
+  group: claude-${task}-\${{ inputs.number || ${job}.pullRequest || ${job}.issue || ${job}.ref || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -54,14 +51,29 @@ jobs:
     with:
       hub-url: ${hubUrl}
       task: ${task}
-      ref: \${{ inputs.ref }}
-      sha: \${{ inputs.sha }}
-      before: \${{ inputs.before }}
-      pull-request: \${{ inputs.pull-request }}
-      issue: \${{ inputs.issue }}
-      sender: \${{ inputs.sender || (!endsWith(github.actor, '[bot]') && github.actor || '') }}
-      cursor: \${{ inputs.cursor }}
+      hub: \${{ inputs.hub }}
+      number: \${{ inputs.number }}
+      branch: \${{ github.ref_name }}
+      sender: \${{ !endsWith(github.actor, '[bot]') && github.actor || '' }}
 `;
+}
+
+export interface DispatchedJob {
+  label: string;
+  ref: string;
+  sha: string;
+  before: string;
+  pullRequest: string;
+  issue: string;
+  sender: string;
+  cursor: string;
+}
+
+export function dispatchLabel(job: { ref: string; pullRequest?: number; issue?: number; before?: string }): string {
+  if (job.pullRequest) return `Pull request #${job.pullRequest}`;
+  if (job.issue) return `Issue #${job.issue}`;
+  if (job.before) return `Push to ${job.ref}`;
+  return `Sweep of ${job.ref}`;
 }
 
 export function workflowFiles(tasks: readonly TaskName[], actionRepository: string, version: string, hubUrl: string): Record<string, string> {

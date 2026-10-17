@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { sign } from "../src/base/hub.ts";
 import { appJwt, base64Url, pkcs8FromPem } from "../worker/src/github.ts";
 import { ACTIONS_ISSUER, HUB_AUDIENCE, reportKey, TokenError, verifyActionsToken, type SigningKey } from "../worker/src/oidc.ts";
-import { contentHash, gitBlobSha, SHARED_WORKFLOW, workflowFiles } from "../worker/src/workflow.ts";
+import { contentHash, dispatchLabel, gitBlobSha, SHARED_WORKFLOW, workflowFiles } from "../worker/src/workflow.ts";
 import { ALERT_SETTLE_MS, CHECKS_SETTLE_MS, CONVERSATION_SETTLE_MS, DEPENDABOT_GRACE_MS, effectsOf, jobKey, mergeJobs, type Job, type WebhookPayload } from "../worker/src/routing.ts";
 import { hubSettings, parseConfig, TASKS } from "../src/base/settings.ts";
 import { runnerWorkflows } from "../scripts/hub-deploy.ts";
@@ -312,6 +312,11 @@ test("the hub installs one workflow per enabled task, each calling the shared on
   assert.match(scan, /hub-url: https:\/\/hub\.example\.workers\.dev$/m);
   assert.match(scan, /task: scan$/m);
   assert.match(scan, /id-token: write/);
+  assert.match(scan, /number:\n {8}description: Pull request number \(optional/);
+  assert.match(scan, /required: false/);
+  assert.doesNotMatch(scan, /sha:|before:|cursor:|ref:/);
+  assert.match(scan, /run-name: .*\.label \|\| format\('Run by \{0\}/);
+  assert.match(workflowFiles(["conversation"], "o/r", "v3", "https://h")["claude-conversation.yml"] ?? "", /description: Pull request or issue number\n {8}required: true/);
   const all = workflowFiles(TASKS, "Mackery6969/Claude-Autofix", "v3", "https://hub.example.workers.dev");
   assert.equal(new Set(Object.keys(all)).size, TASKS.length);
   assert.notEqual(await contentHash(files), await contentHash(all));
@@ -320,4 +325,11 @@ test("the hub installs one workflow per enabled task, each calling the shared on
 
 test("workflow files are compared by their git blob hash", async () => {
   assert.equal(await gitBlobSha("hello\n"), "ce013625030ba8dba906f756967f9e9ca394464a");
+});
+
+test("runs the hub starts are named for why they started", () => {
+  assert.deepEqual(
+    [dispatchLabel({ ref: "main", pullRequest: 3 }), dispatchLabel({ ref: "", issue: 5 }), dispatchLabel({ ref: "dev", before: "abc" }), dispatchLabel({ ref: "main" })],
+    ["Pull request #3", "Issue #5", "Push to dev", "Sweep of main"],
+  );
 });

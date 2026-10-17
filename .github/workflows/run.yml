@@ -9,6 +9,15 @@ on:
       task:
         type: string
         required: true
+      hub:
+        type: string
+        default: ""
+      number:
+        type: string
+        default: ""
+      branch:
+        type: string
+        default: ""
       ref:
         type: string
         default: ""
@@ -55,9 +64,49 @@ jobs:
           done
           echo "app-slug=$(jq -r '.["app-slug"]' <<<"$response")" >> "$GITHUB_OUTPUT"
           echo "cursor=$(jq -r '.cursor // ""' <<<"$response")" >> "$GITHUB_OUTPUT"
+      - id: job
+        name: Work out what to run on
+        env:
+          GH_TOKEN: ${{ steps.hub.outputs.github-token }}
+          HUB_JOB: ${{ inputs.hub }}
+          NUMBER: ${{ inputs.number }}
+          BRANCH: ${{ inputs.branch }}
+          REF: ${{ inputs.ref }}
+          SHA: ${{ inputs.sha }}
+          BEFORE: ${{ inputs.before }}
+          PULL_REQUEST: ${{ inputs.pull-request }}
+          ISSUE: ${{ inputs.issue }}
+          SENDER: ${{ inputs.sender }}
+          CURSOR: ${{ inputs.cursor || steps.hub.outputs.cursor }}
+        run: |
+          set -euo pipefail
+          if [ -n "$HUB_JOB" ]; then
+            field() { jq -r --arg name "$1" '.[$name] // ""' <<<"$HUB_JOB"; }
+            REF="$(field ref)" SHA="$(field sha)" BEFORE="$(field before)" PULL_REQUEST="$(field pullRequest)" ISSUE="$(field issue)" SENDER="$(field sender)"
+            CURSOR="$(field cursor)"
+            [ -n "$CURSOR" ] || CURSOR="${{ steps.hub.outputs.cursor }}"
+          elif [ -n "$NUMBER" ]; then
+            if [[ ! "$NUMBER" =~ ^[0-9]+$ ]]; then
+              echo "::error::The number must be a pull request or issue number."
+              exit 1
+            fi
+            REF=""
+            if [ "$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.pull_request != null')" = "true" ]; then PULL_REQUEST="$NUMBER"; else ISSUE="$NUMBER"; fi
+          elif [ -z "$REF" ]; then
+            REF="$BRANCH"
+          fi
+          {
+            echo "ref=$REF"
+            echo "sha=$SHA"
+            echo "before=$BEFORE"
+            echo "pull-request=$PULL_REQUEST"
+            echo "issue=$ISSUE"
+            echo "sender=$SENDER"
+            echo "cursor=$CURSOR"
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.sha || inputs.ref }}
+          ref: ${{ steps.job.outputs.sha || steps.job.outputs.ref }}
           token: ${{ steps.hub.outputs.github-token }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -71,13 +120,13 @@ jobs:
         with:
           task: ${{ inputs.task }}
           repository: ${{ github.repository }}
-          ref: ${{ inputs.ref }}
-          sha: ${{ inputs.sha }}
-          before: ${{ inputs.before }}
-          pull-request: ${{ inputs.pull-request }}
-          issue: ${{ inputs.issue }}
-          sender: ${{ inputs.sender }}
-          cursor: ${{ inputs.cursor || steps.hub.outputs.cursor }}
+          ref: ${{ steps.job.outputs.ref }}
+          sha: ${{ steps.job.outputs.sha }}
+          before: ${{ steps.job.outputs.before }}
+          pull-request: ${{ steps.job.outputs.pull-request }}
+          issue: ${{ steps.job.outputs.issue }}
+          sender: ${{ steps.job.outputs.sender }}
+          cursor: ${{ steps.job.outputs.cursor }}
           claude-code-oauth-token: ${{ steps.hub.outputs.claude-token }}
           github-token: ${{ steps.hub.outputs.github-token }}
           app-slug: ${{ steps.hub.outputs.app-slug }}

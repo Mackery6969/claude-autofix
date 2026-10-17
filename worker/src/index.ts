@@ -6,7 +6,7 @@ import { dueJobs, newRecord, scheduledWork, type RepositoryRecord } from "./sche
 import { GITHUB_SIGNATURE_HEADER, REPORT_SIGNATURE_HEADER, verifySignature } from "./signatures.ts";
 import { State, type KeyValueStore } from "./state.ts";
 import { reportKey, TokenError, verifyActionsToken } from "./oidc.ts";
-import { contentHash, gitBlobSha, SHARED_WORKFLOW, TASK_WORKFLOWS, WORKFLOW_DIRECTORY, workflowFiles } from "./workflow.ts";
+import { contentHash, dispatchLabel, gitBlobSha, SHARED_WORKFLOW, TASK_WORKFLOWS, WORKFLOW_DIRECTORY, WORKFLOW_INPUT, workflowFiles, type DispatchedJob } from "./workflow.ts";
 
 export interface Env {
   STATE: KeyValueStore;
@@ -262,12 +262,13 @@ class Hub {
     }
     const [first] = pending;
     if (!first) return;
+    let shared = "";
     try {
-      await this.app.as(first.record.installation, "GET", `/repos/${this.env.ACTION_REPOSITORY}/contents/${SHARED_WORKFLOW}?ref=${encodeURIComponent(this.env.ACTION_VERSION)}`);
+      shared = decodeBase64((await this.app.as<{ content: string }>(first.record.installation, "GET", `/repos/${this.env.ACTION_REPOSITORY}/contents/${SHARED_WORKFLOW}?ref=${encodeURIComponent(this.env.ACTION_VERSION)}`)).content);
     } catch (error) {
-      if (error instanceof GitHubApiError && error.status === 404) return void log.push(`${this.env.ACTION_REPOSITORY}@${this.env.ACTION_VERSION} has no ${SHARED_WORKFLOW} yet, so repositories keep using the runner until it's released.`);
-      throw error;
+      if (!(error instanceof GitHubApiError && error.status === 404)) throw error;
     }
+    if (!new RegExp(`^ {6}${WORKFLOW_INPUT}:`, "m").test(shared)) return void log.push(`${this.env.ACTION_REPOSITORY}@${this.env.ACTION_VERSION} doesn't have the current ${SHARED_WORKFLOW} yet, so repositories keep their workflows until it's released.`);
     for (const { record, files, hash } of pending.slice(0, WORKFLOW_INSTALLS_PER_TICK)) log.push(await this.commitWorkflows(record, files, hash));
   }
 
@@ -340,9 +341,12 @@ class Hub {
     }
     const inputs: Record<string, string> = { ref: job.ref, sha, before: job.before ?? "", "pull-request": job.pullRequest ? String(job.pullRequest) : "", issue: job.issue ? String(job.issue) : "", sender };
     if ((job.task === "quality" || job.task === "scan") && onDefaultBranch && !job.before) inputs.cursor = await this.state.cursor(job.repository, job.task);
-    if (record?.workflow && !record.workflow.includes(":") && (await this.state.settings(job.repository)).tasks.includes(job.task)) {
+    const installed = record?.workflow && !record.workflow.includes(":") && (await this.state.settings(job.repository)).tasks.includes(job.task);
+    if (record && installed) {
+      const hub: DispatchedJob = { label: dispatchLabel(job), ref: inputs.ref ?? "", sha, before: inputs.before ?? "", pullRequest: inputs["pull-request"] ?? "", issue: inputs.issue ?? "", sender, cursor: inputs.cursor ?? "" };
+      const current = record.workflow === (await this.workflowsFor(job.repository))?.hash;
       try {
-        await this.app.as(job.installation, "POST", `/repos/${job.repository}/actions/workflows/${TASK_WORKFLOWS[job.task].file}/dispatches`, { ref: record.defaultBranch, inputs });
+        await this.app.as(job.installation, "POST", `/repos/${job.repository}/actions/workflows/${TASK_WORKFLOWS[job.task].file}/dispatches`, { ref: record.defaultBranch, inputs: current ? { hub: JSON.stringify(hub) } : inputs });
         return;
       } catch (error) {
         if (error instanceof GitHubApiError && (error.status === 404 || error.status === 422)) await this.state.saveRepository({ ...record, workflow: undefined });
