@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { FILES, readSaved } from "./home.ts";
 
 const USAGE = `Usage:
@@ -14,10 +15,10 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const url = readSaved(FILES.hubUrl);
+  const url = readSaved(FILES.hubUrl) || spawnSync("gh", ["variable", "get", "CLAUDE_AUTOFIX_HUB_URL", "--repo", "Mackery6969/Claude-Autofix"], { encoding: "utf8" }).stdout?.trim();
   const secret = readSaved(FILES.adminSecret);
   if (!url || !secret) {
-    console.error(`No hub is set up yet (${FILES.hubUrl} and ${FILES.adminSecret}). Run: node scripts/setup-hub.ts`);
+    console.error(`No hub is set up yet: ${url ? `${FILES.adminSecret} is missing` : "it hasn't been deployed (gh workflow run hub.yml)"}. See the README.`);
     process.exitCode = 1;
     return;
   }

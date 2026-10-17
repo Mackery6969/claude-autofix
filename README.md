@@ -118,13 +118,21 @@ These commands are signed with an admin secret that only your machine and the hu
 
 ### Setting it up
 
-With the credentials from the quick start in `~/.claude-autofix/`, and `gh` and `npx wrangler` logged in:
+Everything the hub needs is kept as secrets on this repository, and the **Deploy hub** workflow ([`hub.yml`](.github/workflows/hub.yml)) deploys it to Cloudflare and keeps the runner up to date. Every release runs it, so the hub, the runner workflow and the action always match.
 
-```bash
-node scripts/setup-hub.ts --client-id <app client ID> --app-slug <app slug>
-```
+1. Add a `CLOUDFLARE_API_TOKEN` secret to this repository: a Cloudflare API token made from the **Edit Cloudflare Workers** template. `CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_APP_PRIVATE_KEY` are already here from the quick start.
+2. Give the app **Secrets** and **Variables** (read and write) under **Permissions & events**, and accept them on the installation. Deploys use them to keep the runner's secrets current.
+3. Once, from a checkout with `gh` and `npx wrangler` logged in:
 
-That deploys the hub, creates `<you>/claude-autofix-runner` (private) with the runner workflow, sets its secrets and variables, and saves the hub's URL and secrets in `~/.claude-autofix/`. Run it again to update. It then prints three things to change on the app: turn its webhook on (pointed at the hub), subscribe to **Code scanning alert**, **Dependabot alert**, **Issues** and **Pull request** events, and install it on the runner. To install it on other accounts' repositories, also change **Where can this GitHub App be installed?** to **Any account**; the permit list still decides where it does anything.
+   ```bash
+   node scripts/setup-hub.ts --client-id <app client ID>
+   ```
+
+   That creates `<you>/claude-autofix-runner` (private), generates the hub's secrets into this repository's secrets (keeping the webhook and admin secrets in `~/.claude-autofix/` for you), and sets the variables the deploy reads.
+4. Run **Deploy hub** (`gh workflow run hub.yml`). Its summary shows the hub's URL.
+5. On the app: turn the webhook on with `<hub URL>/webhook` and the secret in `~/.claude-autofix/webhook-secret`, subscribe to **Code scanning alert**, **Dependabot alert**, **Issues** and **Pull request** events, and install it on the runner. To install it on other accounts' repositories, also change **Where can this GitHub App be installed?** to **Any account**; the permit list still decides where it does anything.
+
+To rotate a credential, update its secret here and run **Deploy hub** again.
 
 Move a repository over by removing its three Claude Autofix workflows, or it runs twice.
 

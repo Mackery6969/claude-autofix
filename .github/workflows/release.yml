@@ -78,3 +78,9 @@ jobs:
             echo ""
             echo "Workflows using \`@${GITHUB_REF_NAME%%.*}\` get this version on their next run."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  hub:
+    needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
+    uses: ./.github/workflows/hub.yml
+    secrets: inherit
