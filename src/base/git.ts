@@ -26,7 +26,7 @@ export function git(args: string[], options: { cwd: string; env?: NodeJS.Process
 }
 
 export function changedFiles(cwd: string): ChangedFile[] {
-  const modified = splitNul(git(["diff", "-z", "--name-only"], { cwd })).map((path) => ({ path, tracked: true }));
+  const modified = splitNul(git(["diff", "-z", "--name-only", "--no-renames", "HEAD"], { cwd })).map((path) => ({ path, tracked: true }));
   const added = splitNul(git(["ls-files", "-z", "--others", "--exclude-standard"], { cwd })).map((path) => ({ path, tracked: false }));
   return [...modified, ...added];
 }
@@ -36,7 +36,7 @@ export function hasChanges(cwd: string): boolean {
 }
 
 export function restore(file: ChangedFile, cwd: string): void {
-  if (file.tracked) git(["checkout", "--", file.path], { cwd });
+  if (file.tracked) git(["restore", "--source=HEAD", "--staged", "--worktree", "--", file.path], { cwd });
   else rmSync(join(cwd, file.path), { force: true });
 }
 
