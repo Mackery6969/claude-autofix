@@ -92,7 +92,7 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
     if (!this.claudeEnabled) return this.reportClaudeDisabled();
 
     const handled = force ? new Set<string>() : await this.handledKeys();
-    const answered = force ? new Set<number>() : await issuesAlreadyAnswered(github, issues.filter((issue) => !handled.has(issueKey(issue.number))));
+    const answered = force ? new Set<number>() : await issuesAlreadyAnswered(github, issues.filter((issue) => !handled.has(issueKey(issue.number))), this.settings.author.name);
     const pendingAlerts = alerts.filter((alert) => !handled.has(alertKey(alert)));
     const pendingDependencies = dependencies.filter((dependency) => !handled.has(dependencyKey(dependency)));
     const pendingIssues = issues.filter((issue) => !handled.has(issueKey(issue.number)) && !answered.has(issue.number));
@@ -177,7 +177,9 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
       log(`Leaving ${name} alone: ${skipped}. GitHub still shows its code scanning results.`);
       return undefined;
     }
-    const handledBefore = changes.pullRequest ? keysInMarker((await github.findComment(changes.pullRequest, commentMarker(this.name)))?.body ?? "") : [];
+    const marker = commentMarker(this.name);
+    const ownComment = changes.pullRequest ? (await github.comments(changes.pullRequest)).find((comment) => this.isOwn(comment.user?.login ?? "") && comment.body?.includes(marker)) : undefined;
+    const handledBefore = keysInMarker(ownComment?.body ?? "");
     const pending = alerts.filter((alert) => !handledBefore.includes(alertKey(alert)));
     if (pending.length === 0) {
       log(`Every alert on ${name}'s changed lines has already been handled.`);

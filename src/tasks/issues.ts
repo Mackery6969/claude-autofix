@@ -64,10 +64,11 @@ export function issueKey(number: number): string {
   return `issue-${number}`;
 }
 
-export async function issuesAlreadyAnswered(github: GitHub, issues: Array<IssueWork & { comments?: number }>): Promise<Set<number>> {
+export async function issuesAlreadyAnswered(github: GitHub, issues: Array<IssueWork & { comments?: number }>, author: string): Promise<Set<number>> {
   const answered = new Set<number>();
   for (const issue of issues) {
-    if (await github.findComment(issue.number, ISSUE_MARKER)) answered.add(issue.number);
+    const comments = await github.comments(issue.number);
+    if (comments.some((comment) => comment.user?.login.toLowerCase() === author.toLowerCase() && comment.body?.includes(ISSUE_MARKER))) answered.add(issue.number);
   }
   return answered;
 }
