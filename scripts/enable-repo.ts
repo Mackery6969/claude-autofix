@@ -1,14 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { FILES } from "./home.ts";
 
 const SETUP_BRANCH = "claude-autofix-setup";
 const WORKFLOWS = ["security", "code-quality", "claude-resume"];
 const EXAMPLES = new URL("../examples/", import.meta.url);
 const SECRETS = [
-  { name: "CLAUDE_CODE_OAUTH_TOKEN", file: process.env.CLAUDE_AUTOFIX_TOKEN_FILE ?? join(homedir(), ".claude-autofix", "claude-oauth-token") },
-  { name: "CLAUDE_APP_PRIVATE_KEY", file: process.env.CLAUDE_AUTOFIX_KEY_FILE ?? join(homedir(), ".claude-autofix", "app-private-key.pem") },
+  { name: "CLAUDE_CODE_OAUTH_TOKEN", file: FILES.claudeToken },
+  { name: "CLAUDE_APP_PRIVATE_KEY", file: FILES.appKey },
 ];
 
 interface Options {

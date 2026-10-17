@@ -96,6 +96,67 @@ Merge it and the schedules start. If the repository already has the workflows, p
 
 Optionally, write down your rules: Claude reads the repository's `CLAUDE.md`, and [`examples/CLAUDE.md`](examples/CLAUDE.md) is a starting point.
 
+## Hub mode: install the app and it runs
+
+Instead of adding workflows to every repository, you can run Claude Autofix the way GitHub runs CodeQL's default setup: install the app on a repository and it starts working, with nothing committed there. Updates reach every repository at once, because nothing in them pins a version.
+
+| Part | Where | What it does |
+| --- | --- | --- |
+| Hub | A Cloudflare Worker ([`worker/`](worker)) | Receives the app's webhooks, queues work, runs the schedules, and keeps what little state there is: where each quality pass stopped, and one usage-limit pause shared by every repository (they all spend the same subscription). |
+| Runner | A private repository of yours, with [`examples/runner.yml`](examples/runner.yml) | The hub dispatches jobs to it. Each job gets a token for one repository, checks it out and runs this action. Claude's token, the app key and every run's logs stay in this one private repository. |
+
+**It only works where you permit it.** Installing the app somewhere isn't enough: the hub only works on repositories owned by the accounts in `PERMITTED_OWNERS` (you, unless you pass `--owners`) and on ones you permit by name. Everything else is ignored, even if someone installs the app on it.
+
+```bash
+node scripts/hub.ts permit someone/their-project   # let the hub work on a repository you don't own
+node scripts/hub.ts revoke someone/their-project   # stop, and drop anything queued for it
+node scripts/hub.ts list                           # repositories seen, which are permitted, the queue and any pause
+node scripts/hub.ts run owner/repo quality         # queue a pass now (optionally on a branch)
+```
+
+These commands are signed with an admin secret that only your machine and the hub have.
+
+### Setting it up
+
+With the credentials from the quick start in `~/.claude-autofix/`, and `gh` and `npx wrangler` logged in:
+
+```bash
+node scripts/setup-hub.ts --client-id <app client ID> --app-slug <app slug>
+```
+
+That deploys the hub, creates `<you>/claude-autofix-runner` (private) with the runner workflow, sets its secrets and variables, and saves the hub's URL and secrets in `~/.claude-autofix/`. Run it again to update. It then prints three things to change on the app: turn its webhook on (pointed at the hub), subscribe to **Code scanning alert**, **Dependabot alert**, **Issues** and **Pull request** events, and install it on the runner. To install it on other accounts' repositories, also change **Where can this GitHub App be installed?** to **Any account**; the permit list still decides where it does anything.
+
+Move a repository over by removing its three Claude Autofix workflows, or it runs twice.
+
+### What starts work
+
+| Event | Work |
+| --- | --- |
+| A code scanning alert appears on the default branch | A security sweep, a few minutes later so a whole scan's alerts go into one run. |
+| A code scanning alert appears on another branch or a pull request | Security fixes for the lines that branch or pull request changes. |
+| An issue is opened, labelled or reopened | A security sweep (which includes issues). |
+| A Dependabot alert opens | A security sweep after an hour, giving Dependabot time to open its own pull request. |
+| You open a pull request, or mark one ready | A code-quality pass over what it changes. |
+| One of Claude's pull requests is closed | The hub deletes its branch. |
+| Every 6 hours / once a week | A security sweep / the next code-quality batch, spread through the week per repository. |
+
+When Claude hits a usage limit, the hub holds every queued job until the limit resets, then carries on, starting with the run that paused.
+
+The runner uses `ubuntu-latest`, which already has Node, Python, Java, Go and .NET. A `verify-command` needing anything else should install it itself.
+
+### Per-repository settings
+
+Put settings in `.github/claude-autofix.yml`, like CodeQL's config file. It works in hub mode and with workflows, and wins over workflow inputs. Any input under [Inputs](#inputs) that isn't a credential can go there, plus `tasks`:
+
+```yaml
+verify-command: npm ci && npm test
+tasks: [security, quality]
+exclude:
+  - vendor
+instructions: |
+  Prefer early returns over nested conditionals.
+```
+
 ## How it works
 
 ### Branches, commits and pull requests
@@ -142,7 +203,7 @@ Every Dependabot alert in a group ends up fixed in a pull request, dismissed, or
 
 Actions used with a tag (`uses: actions/checkout@v7`) get flagged because a tag can be moved. Claude can't look up commit SHAs, so the action pins these itself: it asks GitHub which commit the tag points to and rewrites the line as `uses: actions/checkout@<sha> # v7`. The comment keeps the version readable and lets Dependabot keep the pin current. This costs no Claude usage.
 
-**On pull requests**, only alerts on lines the pull request adds or changes count, the same ones GitHub comments on. If the pull request is from a branch in this repository, opened by someone in `pull-request-authors` (by default, you), and isn't a draft, Claude fixes them and pushes the fix to the pull request's branch (or opens a separate pull request into it, with `pull-request-mode: pull-request`), with one summary comment it keeps up to date. Pins in workflow files are pushed if the token may change workflow files (a GitHub App with Workflows permission), and posted as suggested changes otherwise. Everyone else's pull requests are left alone; GitHub already shows code scanning results on them.
+**On pull requests and branches**, only alerts on lines that differ from the base count: a pull request's base branch, or the default branch for a branch run (dispatched by hand, or after a scanner runs on a push to it). A branch with an open pull request is treated as that pull request. On a pull request these are the same alerts GitHub comments on. If the pull request is from a branch in this repository, opened by someone in `pull-request-authors` (by default, you), and isn't a draft, Claude fixes them and pushes the fix to the pull request's branch (or opens a separate pull request into it, with `pull-request-mode: pull-request`), with one summary comment it keeps up to date. Pins in workflow files are pushed if the token may change workflow files (a GitHub App with Workflows permission), and posted as suggested changes otherwise. Everyone else's pull requests are left alone; GitHub already shows code scanning results on them.
 
 ### Code quality
 
@@ -155,7 +216,7 @@ Actions used with a tag (`uses: actions/checkout@v7`) get flagged because a tag 
 
 A huge repository simply takes more weeks to get through. To go faster, raise `batch-lines` or run the workflow more often.
 
-**On pull requests**, Claude looks at the source files the pull request changes, up to `batch-lines`, using the pull request's diff to focus on the new code. With `pull-request-mode: commit` (the default) it pushes a commit to the pull request's branch and leaves one summary comment that it keeps up to date; with `pull-request-mode: pull-request` it opens a separate pull request into your branch instead. It only does this for:
+**On pull requests and branches**, Claude looks at the source files that differ from the base (the pull request's base, or the default branch when you run the workflow on a branch), up to `batch-lines`, using the diff to focus on the new code. A branch with an open pull request is treated as that pull request; a branch without one gets the commit pushed to it, or a pull request into it. With `pull-request-mode: commit` (the default) it pushes a commit to the pull request's branch and leaves one summary comment that it keeps up to date; with `pull-request-mode: pull-request` it opens a separate pull request into your branch instead. It only does this for:
 
 - pull requests from branches in the same repository (never forks),
 - opened by someone in `pull-request-authors` (by default, the repository owner), so collaborators' pull requests don't spend your usage,
@@ -204,8 +265,8 @@ The action never sleeps in a job waiting for a limit, and Claude can't start sub
 | `exclude` | | quality: paths Claude must not change, one per line. |
 | `extensions` | common languages | quality: file extensions that count as source code. |
 | `batch-lines` | `1500` | quality: roughly how many lines one pass covers. |
-| `pull-request-mode` | `commit` | On pull requests: `commit` to the branch, or open a separate `pull-request` into it. |
-| `pull-request-authors` | repository owner | On pull requests: whose pull requests Claude may change, one per line. |
+| `pull-request-mode` | `commit` | On pull requests and branches: `commit` to the branch, or open a separate `pull-request` into it. |
+| `pull-request-authors` | repository owner | On pull requests and branches: whose pull requests, or whose branch runs, Claude may change, one per line. |
 | `instructions` | | quality: extra guidance added to the prompt. |
 
 Outputs: `files`, `pull-request-url`, `branch`, `paused`, `resume-at`, `claude-cost-usd` and, for resume, `resumed`.

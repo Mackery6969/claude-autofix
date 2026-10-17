@@ -3,11 +3,12 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ActionFailure, log, notice, setOutput, summary, untrustedOutput, warn } from "./actions.ts";
 import { hasCredentials, installClaudeCode, runClaude, type Credentials } from "./claude.ts";
-import { changedFiles, commitAll, currentCommit, discardUncommitted, forcePush, git, pushIfUnchanged, resetTo, restore, type Identity, type PushOptions } from "./git.ts";
+import { changedFiles, checkoutBranchAt, commitAll, currentCommit, discardUncommitted, forcePush, git, lastCommitIsBy, pushIfUnchanged, resetTo, restore, type Identity, type PushOptions } from "./git.ts";
 import { GitHubError, type GitHub, type PullRequest } from "./github.ts";
-import { pauseRun } from "./pause.ts";
+import type { Hub } from "./hub.ts";
+import { pauseRun, type PauseContext } from "./pause.ts";
 import { isOffLimits, type PathRules } from "./paths.ts";
-import type { PullRequestEvent } from "./pulls.ts";
+import { whyNotEligible, type ChangeSet, type PullRequestEvent, type PullRequestMode } from "./pulls.ts";
 import { runHelperScript, writeHelperScript, type HelperScript } from "./scripts.ts";
 
 export interface TaskSettings {
@@ -19,9 +20,11 @@ export interface TaskSettings {
   credentials: Credentials;
   serverUrl: string;
   runId: string;
+  runRepository: string;
   eventName: string;
   eventAction: string;
   pullRequest: PullRequestEvent | undefined;
+  changes: ChangeSet | undefined;
   refName: string;
   triggerBranch: string;
   model: string;
@@ -34,6 +37,8 @@ export interface TaskSettings {
   author: Identity;
   canPushWorkflows: boolean;
   timeBudgetMinutes: number;
+  hosted: boolean;
+  hub: Hub | undefined;
 }
 
 export interface PullRequestText {
@@ -56,7 +61,7 @@ export interface Helpers {
   [name: string]: string;
 }
 
-export type Delivery = { kind: "new-pull-request" } | { kind: "pull-request"; branch: string; base: string } | { kind: "push"; branch: string; pullRequest: number };
+export type Delivery = { kind: "new-pull-request" } | { kind: "pull-request"; branch: string; base: string } | { kind: "push"; branch: string; pullRequest: number | undefined };
 
 export const DESCRIPTION_FILE = ".claude-pr.md";
 const WORKFLOWS = ".github/workflows";
@@ -156,8 +161,21 @@ export abstract class ClaudeTask<Plan> {
   }
 
   protected async onDefaultBranch(): Promise<boolean> {
-    if (this.settings.pullRequest || this.settings.eventName.startsWith("pull_request")) return false;
+    if (this.settings.changes || this.settings.eventName.startsWith("pull_request")) return false;
     return this.settings.triggerBranch === (await this.defaultBranch());
+  }
+
+  protected whyChangesSkipped(changes: ChangeSet, authors: string[]): string | undefined {
+    const ineligible = whyNotEligible(changes, authors.length ? authors : [this.settings.github.owner]);
+    if (ineligible) return ineligible;
+    checkoutBranchAt({ ...this.pushOptions, branch: changes.branch, sha: changes.sha });
+    if (lastCommitIsBy(this.settings.workspace, this.settings.author)) return "its latest commit is already Claude's";
+    return undefined;
+  }
+
+  protected changesDelivery(changes: ChangeSet, mode: PullRequestMode): Delivery {
+    if (mode === "commit") return { kind: "push", branch: changes.branch, pullRequest: changes.pullRequest };
+    return { kind: "pull-request", branch: `${this.settings.branchPrefix}/${changes.pullRequest ? `pr-${changes.pullRequest}` : `branch-${slugify(changes.branch)}`}`, base: changes.branch };
   }
 
   protected ownPullRequests(state: "open" | "all"): Promise<PullRequest[]> {
@@ -246,8 +264,8 @@ export abstract class ClaudeTask<Plan> {
     discardUncommitted(workspace);
 
     if (delivery.kind === "push") {
-      await this.pushToPullRequest(delivery, text);
-      await this.delivered(plan, `${this.settings.serverUrl}/${this.settings.github.repository}/pull/${delivery.pullRequest}`);
+      await this.pushToBranch(delivery, text);
+      await this.delivered(plan, delivery.pullRequest ? `${this.settings.serverUrl}/${this.settings.github.repository}/pull/${delivery.pullRequest}` : undefined);
       return "done";
     }
     forcePush({ ...this.pushOptions, branch });
@@ -311,7 +329,7 @@ export abstract class ClaudeTask<Plan> {
       executable: installClaudeCode(join(this.settings.tempDirectory, "claude-code")),
     });
     if (outcome.kind === "limited") {
-      await pauseRun(outcome.limit, { github: this.settings.github, runId: this.settings.runId, resumeWorkflow: this.settings.resumeWorkflow });
+      await pauseRun(outcome.limit, this.pauseContext);
       return undefined;
     }
     if (!outcome.result) throw new ActionFailure(`Claude stopped unexpectedly: ${outcome.failure ?? "no result"}`);
@@ -339,8 +357,13 @@ export abstract class ClaudeTask<Plan> {
     return { title: undefined, description: "", stoppedEarly: undefined, errors: "", costUsd: 0, runUrl: this.runUrl };
   }
 
+  protected get pauseContext(): PauseContext {
+    const { github, runId, resumeWorkflow, hosted, hub } = this.settings;
+    return { github, runId, resumeWorkflow, hosted, hub };
+  }
+
   protected get runUrl(): string {
-    return `${this.settings.serverUrl}/${this.settings.github.repository}/actions/runs/${this.settings.runId}`;
+    return `${this.settings.serverUrl}/${this.settings.runRepository}/actions/runs/${this.settings.runId}`;
   }
 
   private removeScratchFiles(): void {
@@ -368,13 +391,14 @@ export abstract class ClaudeTask<Plan> {
     throw new ActionFailure("verify-command failed after Claude's changes, so nothing was pushed. The attempted diff is in the log above.");
   }
 
-  private async pushToPullRequest(delivery: Extract<Delivery, { kind: "push" }>, text: PullRequestText): Promise<void> {
+  private async pushToBranch(delivery: Extract<Delivery, { kind: "push" }>, text: PullRequestText): Promise<void> {
     if (!pushIfUnchanged({ ...this.pushOptions, branch: delivery.branch })) {
       notice(`${delivery.branch} moved while Claude was working, so nothing was pushed. The next run picks up the new commits.`);
       return;
     }
-    await this.settings.github.upsertComment(delivery.pullRequest, commentMarker(this.name), `### ${text.title}\n\n${text.body}`);
     log(`Pushed Claude's changes to ${delivery.branch}.`);
+    if (!delivery.pullRequest) return summary(`Pushed to ${delivery.branch}.\n\n### ${text.title}\n\n${text.body}`);
+    await this.settings.github.upsertComment(delivery.pullRequest, commentMarker(this.name), `### ${text.title}\n\n${text.body}`);
     summary(`Pushed to ${delivery.branch} (#${delivery.pullRequest}).`);
   }
 

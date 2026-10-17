@@ -1,9 +1,9 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { log, notice, setOutput } from "../base/actions.ts";
-import { checkoutBranchAt, lastCommitIsBy } from "../base/git.ts";
+import { log, notice, setOutput, warn } from "../base/actions.ts";
+import { reportToHub } from "../base/hub.ts";
 import { normalizePath, type PathRules } from "../base/paths.ts";
-import { whyNotEligible, type PullRequestEvent, type PullRequestMode } from "../base/pulls.ts";
+import { changeSetName, filesChanged, type ChangeSet, type PullRequestMode } from "../base/pulls.ts";
 import { ClaudeTask, commitMessage, type ClaudeReport, type Delivery, type Helpers, type PullRequestText, type TaskSettings } from "../base/task.ts";
 import { isSourcePath, listSourceFiles, nextBatch, readSourceFile, takeUpTo, type SourceFile, type SourceScope } from "./sources.ts";
 
@@ -20,12 +20,11 @@ export interface QualityOptions {
   batchLines: number;
   pullRequestMode: PullRequestMode;
   pullRequestAuthors: string[];
-  pullRequest: PullRequestEvent | undefined;
 }
 
 type QualityPlan =
   | { mode: "batch"; files: SourceFile[]; cursor: string; saveCursor: boolean; wrapped: boolean }
-  | { mode: "pull-request"; files: SourceFile[]; skipped: SourceFile[]; pull: PullRequestEvent };
+  | { mode: "changes"; files: SourceFile[]; skipped: SourceFile[]; changes: ChangeSet };
 
 export function cursorMessage(path: string): string {
   return `after=${path}`;
@@ -45,7 +44,8 @@ export class QualityTask extends ClaudeTask<QualityPlan> {
   }
 
   protected async plan(): Promise<QualityPlan | undefined> {
-    if (this.settings.eventName.startsWith("pull_request")) return this.planPullRequest();
+    if (this.settings.changes) return this.planChanges(this.settings.changes);
+    if (this.settings.eventName.startsWith("pull_request")) return undefined;
     if (!(await this.onDefaultBranch())) {
       log("Code-quality passes run on the default branch or on pull requests.");
       return undefined;
@@ -71,30 +71,24 @@ export class QualityTask extends ClaudeTask<QualityPlan> {
     return { mode: "batch", files: batch.files, cursor: batch.cursor, saveCursor: !area, wrapped: batch.wrapped };
   }
 
-  private async planPullRequest(): Promise<QualityPlan | undefined> {
-    const pull = this.#options.pullRequest;
-    if (!pull) return undefined;
-    const authors = this.#options.pullRequestAuthors.length ? this.#options.pullRequestAuthors : [this.settings.github.owner];
+  private async planChanges(changes: ChangeSet): Promise<QualityPlan | undefined> {
     const skip = (reason: string) => {
-      log(`Not refactoring #${pull.number}: ${reason}.`);
+      log(`Not refactoring ${changeSetName(changes)}: ${reason}.`);
       return undefined;
     };
-    const ineligible = whyNotEligible(pull, this.settings.github.repository, authors);
-    if (ineligible) return skip(ineligible);
-
-    checkoutBranchAt({ ...this.pushOptions, branch: pull.head.ref, sha: pull.head.sha });
-    if (lastCommitIsBy(this.settings.workspace, this.settings.author)) return skip("its latest commit is already Claude's");
+    const skipped = this.whyChangesSkipped(changes, this.#options.pullRequestAuthors);
+    if (skipped) return skip(skipped);
 
     const scope = this.scope([]);
-    const changed = (await this.settings.github.pullRequestFiles(pull.number)).filter((file) => file.status !== "removed" && isSourcePath(file.filename, scope));
+    const changed = (await filesChanged(this.settings.github, changes)).filter((file) => file.status !== "removed" && isSourcePath(file.filename, scope));
     const sources = changed.map((file) => readSourceFile(this.settings.workspace, file.filename)).filter((file): file is SourceFile => file !== undefined && file.lines > 0);
-    if (sources.length === 0) return skip("it doesn't change any source files");
+    if (sources.length === 0) return skip(`it doesn't change any source files compared with ${changes.base}`);
 
-    const { taken, skipped } = takeUpTo(sources, this.#options.batchLines);
+    const { taken, skipped: overLimit } = takeUpTo(sources, this.#options.batchLines);
     const patches = changed.filter((file) => taken.some((source) => source.path === file.filename));
     writeFileSync(join(this.settings.workspace, DIFF_FILE), patches.map((file) => `--- a/${file.filename}\n+++ b/${file.filename}\n${file.patch ?? "(diff too large to show)"}\n`).join("\n"));
     setOutput("files", taken.length);
-    return { mode: "pull-request", files: taken, skipped, pull };
+    return { mode: "changes", files: taken, skipped: overLimit, changes };
   }
 
   protected prompt(plan: QualityPlan, helpers: Helpers): string {
@@ -102,7 +96,7 @@ export class QualityTask extends ClaudeTask<QualityPlan> {
     const focus =
       plan.mode === "batch"
         ? `This is the repository's scheduled code-quality pass. This run covers these ${plan.files.length} files:\n\n${fileList}`
-        : `Pull request #${plan.pull.number} changes the files below. Make a code-quality pass over the code this pull request adds or changes; its diff is in \`${DIFF_FILE}\`. Leave untouched code in these files alone unless the change needs it.\n\n${fileList}`;
+        : `${this.changesDescription(plan.changes)} changes the files below compared with \`${plan.changes.base}\`. Make a code-quality pass over the code it adds or changes; its diff is in \`${DIFF_FILE}\`. Leave untouched code in these files alone unless the change needs it.\n\n${fileList}`;
     const workflowRule = this.canEditWorkflows ? "" : "\n- Do not edit files under .github/workflows/: this run cannot push workflow changes.";
     return `${focus}
 
@@ -141,19 +135,21 @@ When you are done:
   }
 
   protected async finished(plan: QualityPlan): Promise<void> {
-    if (plan.mode === "batch" && plan.saveCursor) notice(cursorMessage(plan.cursor), CURSOR_TITLE);
+    if (plan.mode !== "batch" || !plan.saveCursor) return;
+    notice(cursorMessage(plan.cursor), CURSOR_TITLE);
+    const { hub } = this.settings;
+    if (hub) await reportToHub(hub, { kind: "cursor", cursor: plan.cursor }).catch((error: unknown) => warn(`Couldn't tell the hub where this pass stopped, so the next pass repeats it: ${error instanceof Error ? error.message : String(error)}`));
   }
 
   protected delivery(plan: QualityPlan): Delivery {
     if (plan.mode === "batch") return { kind: "new-pull-request" };
-    if (this.#options.pullRequestMode === "commit") return { kind: "push", branch: plan.pull.head.ref, pullRequest: plan.pull.number };
-    return { kind: "pull-request", branch: `${this.settings.branchPrefix}/pr-${plan.pull.number}`, base: plan.pull.head.ref };
+    return this.changesDelivery(plan.changes, this.#options.pullRequestMode);
   }
 
   protected pullRequest(plan: QualityPlan, report: ClaudeReport): PullRequestText {
-    if (plan.mode === "pull-request") {
+    if (plan.mode === "changes") {
       const skipped = plan.skipped.length ? `\n\nSkipped to stay within batch-lines: ${plan.skipped.map((file) => `\`${file.path}\``).join(", ")}.` : "";
-      const title = report.title ?? `Code-quality pass on #${plan.pull.number}`;
+      const title = report.title ?? `Code-quality pass on ${changeSetName(plan.changes).replace(/`/g, "")}`;
       return {
         title,
         commitMessage: commitMessage("refactor", title, report.description),
@@ -170,12 +166,17 @@ When you are done:
     };
   }
 
+  private changesDescription(changes: ChangeSet): string {
+    return changes.pullRequest ? `Pull request #${changes.pullRequest}` : `Branch \`${changes.branch}\``;
+  }
+
   private scope(areas: string[]): SourceScope {
     return { areas: areas.map(normalizePath), exclude: this.#options.exclude.map(normalizePath), extensions: this.#options.extensions };
   }
 
   private async lastCursor(): Promise<string> {
-    const { github, runId } = this.settings;
+    const { github, runId, hosted, hub } = this.settings;
+    if (hosted) return hub?.cursor ?? "";
     const own = await github.workflowRun(runId);
     const runs = await github.workflowRuns(own.workflow_id, await this.defaultBranch());
     for (const run of runs.filter((candidate) => candidate.id !== own.id && !candidate.event.startsWith("pull_request")).slice(0, RUNS_CHECKED_FOR_CURSOR)) {

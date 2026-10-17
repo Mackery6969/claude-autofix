@@ -1,5 +1,6 @@
 import { log, notice, setOutput, summary, warn } from "./actions.ts";
 import type { GitHub } from "./github.ts";
+import { reportToHub, type Hub } from "./hub.ts";
 import { describeLimit, type LimitType, type UsageLimit } from "./limits.ts";
 
 export const PAUSED_TITLE = "claude-paused";
@@ -26,6 +27,8 @@ export interface PauseContext {
   github: GitHub;
   runId: string;
   resumeWorkflow: string;
+  hosted: boolean;
+  hub: Hub | undefined;
 }
 
 export async function pauseRun(usage: UsageLimit, context: PauseContext): Promise<void> {
@@ -34,6 +37,7 @@ export async function pauseRun(usage: UsageLimit, context: PauseContext): Promis
   notice(pauseMessage(pause), PAUSED_TITLE);
   setOutput("paused", true);
   setOutput("resume-at", pause.resumeAt.toISOString());
+  if (context.hosted) return pauseHostedRun(pause, context.hub);
   summary(`## Paused: Claude ${describeLimit(pause.limit)} reached\n\nNothing was changed. This run is cancelled and starts again automatically after **${when}**.`);
 
   try {
@@ -52,6 +56,20 @@ export async function pauseRun(usage: UsageLimit, context: PauseContext): Promis
   log("Cancelling this run.");
   await new Promise((resolve) => setTimeout(resolve, CANCEL_GRACE_MS));
   warn("The run wasn't cancelled in time; ending it as paused instead.");
+}
+
+async function pauseHostedRun(pause: Pause, hub: Hub | undefined): Promise<void> {
+  const when = pause.resumeAt.toUTCString();
+  if (!hub) {
+    summary(`## Paused: Claude ${describeLimit(pause.limit)} reached\n\nNothing was changed. No hub is set, so start this again by hand after **${when}**.`);
+    return;
+  }
+  try {
+    await reportToHub(hub, { kind: "paused", resumeAt: pause.resumeAt.toISOString() });
+    summary(`## Paused: Claude ${describeLimit(pause.limit)} reached\n\nNothing was changed. The hub holds every repository's work until **${when}**, then starts this again.`);
+  } catch (error) {
+    warn(`Couldn't tell the hub about the pause (${messageOf(error)}). The next scheduled run picks this up after ${when}.`);
+  }
 }
 
 function messageOf(error: unknown): string {

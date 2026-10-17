@@ -79,13 +79,37 @@ inputs:
     description: "quality: roughly how many lines of code one pass covers. Larger passes cost more usage and make bigger pull requests."
     default: "1500"
   pull-request-mode:
-    description: "On pull requests: commit (push fixes to the pull request's branch) or pull-request (open a separate pull request into it)."
+    description: "On pull requests and branches other than the default: commit (push fixes to the branch) or pull-request (open a separate pull request into it). Only what differs from the base is looked at."
     default: "commit"
   pull-request-authors:
-    description: "On pull requests: only let Claude change pull requests opened by these users, one per line. Others get a findings comment. Defaults to the repository owner."
+    description: "On pull requests and branches: only let Claude change pull requests opened by, or branch runs started by, these users, one per line. Defaults to the repository owner."
     default: ""
   instructions:
     description: "quality: extra guidance for this repository, added to the prompt."
+    default: ""
+  repository:
+    description: "Hosted mode: the owner/name of the repository to work on when this runs from a central runner repository. Leave empty in the repository's own workflows."
+    default: ""
+  ref:
+    description: "Hosted mode: the branch to work on. The default branch gets the scheduled work; any other branch only what differs from it."
+    default: ""
+  sha:
+    description: "Hosted mode: the commit of ref to work from."
+    default: ""
+  pull-request:
+    description: "Hosted mode: the pull request to work on, if any."
+    default: ""
+  sender:
+    description: "Hosted mode: who made the change, checked against pull-request-authors."
+    default: ""
+  hub-url:
+    description: "Hosted mode: the Claude Autofix hub to report pauses and quality progress to."
+    default: ""
+  hub-secret:
+    description: "Hosted mode: the secret shared with the hub, used to sign reports."
+    default: ""
+  cursor:
+    description: "Hosted mode: where the last quality pass stopped, passed on by the hub."
     default: ""
 
 outputs:

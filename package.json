@@ -29,7 +29,9 @@
     "typecheck": "tsc",
     "test": "node --test \"test/**/*.test.ts\"",
     "check": "npm run typecheck && npm test && npm run build",
-    "enable": "node scripts/enable-repo.ts"
+    "enable": "node scripts/enable-repo.ts",
+    "hub": "node scripts/hub.ts",
+    "setup-hub": "node scripts/setup-hub.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.295"
