@@ -3,8 +3,9 @@ import { createVerify, generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
 import { sign } from "../src/base/hub.ts";
 import { appJwt, pkcs8FromPem } from "../worker/src/github.ts";
-import { ALERT_SETTLE_MS, DEPENDABOT_GRACE_MS, effectsOf, jobKey, mergeJobs, type Job, type WebhookPayload } from "../worker/src/routing.ts";
-import { dueJobs, newRecord, QUALITY_EVERY_MS, scheduledWork, SECURITY_EVERY_MS } from "../worker/src/schedule.ts";
+import { ALERT_SETTLE_MS, CHECKS_SETTLE_MS, CONVERSATION_SETTLE_MS, DEPENDABOT_GRACE_MS, effectsOf, jobKey, mergeJobs, type Job, type WebhookPayload } from "../worker/src/routing.ts";
+import { hubSettings, parseConfig } from "../src/base/settings.ts";
+import { dueJobs, newRecord, scheduledWork } from "../worker/src/schedule.ts";
 import { verifySignature } from "../worker/src/signatures.ts";
 import { State, type KeyValueStore } from "../worker/src/state.ts";
 
@@ -17,7 +18,7 @@ const enqueued = (event: string, body: WebhookPayload) => effectsOf(event, body,
 const job = (overrides: Partial<Job> = {}): Job => ({ repository: "Mackery6969/game", installation: 7, task: "security", ref: "main", sha: "", pullRequest: undefined, sender: "", due: now, ...overrides });
 
 test("a code scanning alert on the default branch queues a security sweep once the scanner settles", () => {
-  const [queued] = enqueued("code_scanning_alert", payload({ action: "created", ref: "refs/heads/main", commit_oid: "abc" }));
+  const [queued] = enqueued("code_scanning_alert", payload({ action: "created", ref: "refs/heads/main", commit_oid: "abc", alert: { rule: { security_severity_level: "medium" } } }));
   assert.equal(queued?.task, "security");
   assert.equal(queued?.ref, "main");
   assert.equal(queued?.due, now + ALERT_SETTLE_MS);
@@ -26,7 +27,7 @@ test("a code scanning alert on the default branch queues a security sweep once t
 test("alerts on a branch or pull request queue work on just those changes", () => {
   const [branch] = enqueued("code_scanning_alert", payload({ action: "appeared_in_branch", ref: "refs/heads/feature/login", commit_oid: "def" }));
   assert.deepEqual([branch?.ref, branch?.sha, branch?.pullRequest], ["feature/login", "def", undefined]);
-  const [pull] = enqueued("code_scanning_alert", payload({ action: "created", ref: "refs/pull/16/merge", commit_oid: "123" }));
+  const [pull] = enqueued("code_scanning_alert", payload({ action: "created", ref: "refs/pull/16/merge", commit_oid: "123", alert: { rule: { security_severity_level: "high" } } }));
   assert.equal(pull?.pullRequest, 16);
   assert.equal(jobKey(pull ?? job()), "job:Mackery6969/game|security|pr-16");
   assert.deepEqual(enqueued("code_scanning_alert", payload({ action: "created", ref: "refs/heads/claude/security/x" })), []);
@@ -53,6 +54,55 @@ test("your pull requests get a quality pass; bots, drafts, forks and Claude's ow
   assert.deepEqual(enqueued("pull_request", payload({ action: "opened", pull_request: pull(), sender: { login: "claude-autofix[bot]", type: "Bot" } })), []);
 });
 
+test("comments become conversations, but never Claude's own or a bot's", () => {
+  const [onIssue] = enqueued("issue_comment", payload({ action: "created", issue: { number: 12 }, comment: { user: { login: "stranger", type: "User" } } }));
+  assert.deepEqual([onIssue?.task, onIssue?.issue, onIssue?.pullRequest, onIssue?.due], ["conversation", 12, undefined, now + CONVERSATION_SETTLE_MS]);
+  const [onPull] = enqueued("issue_comment", payload({ action: "created", issue: { number: 9, pull_request: {} }, comment: { user: { login: "Mackery6969", type: "User" } } }));
+  assert.deepEqual([onPull?.pullRequest, onPull?.issue], [9, undefined]);
+  assert.equal(jobKey(onPull ?? job()), "job:Mackery6969/game|conversation|pr-9");
+  assert.deepEqual(enqueued("issue_comment", payload({ action: "created", issue: { number: 9 }, comment: { user: { login: "claude-autofix[bot]", type: "Bot" } }, sender: { login: "claude-autofix[bot]", type: "Bot" } })), []);
+  assert.deepEqual(enqueued("issue_comment", payload({ action: "created", issue: { number: 9 }, comment: { user: { login: "codecov[bot]", type: "Bot" } }, sender: { login: "codecov[bot]", type: "Bot" } })), []);
+  assert.deepEqual(enqueued("issue_comment", payload({ action: "edited", issue: { number: 9 }, comment: { user: { login: "Mackery6969" } } })), []);
+});
+
+test("reviews on Claude's pull requests become conversations; empty approvals and other pull requests don't", () => {
+  const head = (ref: string) => ({ number: 9, user: { login: "claude-autofix[bot]", type: "Bot" }, head: { ref, sha: "abc", repo: repository } });
+  const review = (state: string, body: string | null, ref = "claude/quality/x") => enqueued("pull_request_review", payload({ action: "submitted", pull_request: head(ref), review: { user: { login: "Mackery6969", type: "User" }, state, body } }));
+  assert.equal(review("commented", "Rename this.")[0]?.pullRequest, 9);
+  assert.equal(review("changes_requested", null)[0]?.task, "conversation");
+  assert.deepEqual(review("approved", ""), []);
+  assert.deepEqual(review("commented", "Rename this.", "feature").map((entry) => `${entry.ref}:${entry.mentioned}`), [":false"]);
+  const [inline] = enqueued("pull_request_review_comment", payload({ action: "created", pull_request: head("claude/security/y"), comment: { user: { login: "Mackery6969", type: "User" } } }));
+  assert.equal(inline?.sender, "Mackery6969");
+});
+
+test("a failed run on Claude's branch, even one its own push started, becomes a conversation on its pull request", () => {
+  const run = (head_branch: string) => payload({ action: "completed", sender: { login: "claude-autofix[bot]", type: "Bot" }, workflow_run: { conclusion: "failure", head_branch, head_sha: "abc", pull_requests: [{ number: 9 }], head_repository: repository } });
+  const [failed] = enqueued("workflow_run", run("claude/quality/x"));
+  assert.deepEqual([failed?.task, failed?.pullRequest, failed?.due], ["conversation", 9, now + CHECKS_SETTLE_MS]);
+  assert.deepEqual(enqueued("workflow_run", run("feature")), []);
+  assert.deepEqual(enqueued("workflow_run", payload({ action: "completed", workflow_run: { conclusion: "success", head_branch: "claude/quality/x", head_sha: "abc", pull_requests: [{ number: 9 }] } })), []);
+});
+
+test("mentioning the app anywhere asks it to join; whether it does is checked against the thread", () => {
+  const user = { login: "Mackery6969", type: "User" };
+  const [comment] = enqueued("issue_comment", payload({ action: "created", issue: { number: 3, pull_request: {} }, comment: { user, body: "@claude-autofix please review" } }));
+  assert.deepEqual([comment?.task, comment?.pullRequest, comment?.mentioned], ["conversation", 3, true]);
+  const [plain] = enqueued("issue_comment", payload({ action: "created", issue: { number: 3 }, comment: { user, body: "no mention here" } }));
+  assert.equal(plain?.mentioned, false);
+  const opened = enqueued("issues", payload({ action: "opened", issue: { number: 8, body: "@claude-autofix why does this crash?" } }));
+  assert.deepEqual(opened.map((entry) => `${entry.task}:${entry.issue ?? ""}:${entry.mentioned ?? ""}`), ["fix::", "conversation:8:true"]);
+  const pull = { number: 5, user, body: "Adds X. @claude-autofix take a look", head: { ref: "feature", sha: "abc", repo: repository } };
+  assert.ok(enqueued("pull_request", payload({ action: "opened", pull_request: pull })).some((entry) => entry.task === "conversation" && entry.pullRequest === 5 && entry.mentioned));
+  const [review] = enqueued("pull_request_review_comment", payload({ action: "created", pull_request: { ...pull, body: "" }, comment: { user, body: "@claude-autofix is this safe?" } }));
+  assert.deepEqual([review?.task, review?.ref, review?.mentioned], ["conversation", "", true]);
+});
+
+test("conversations are dispatched ahead of security, and security ahead of quality", () => {
+  const order = dueJobs([job({ task: "quality", due: now - 30 }), job({ task: "security", due: now - 20, ref: "s" }), job({ task: "conversation", pullRequest: 9, due: now - 10 })], now, 3);
+  assert.deepEqual(order.map((entry) => entry.task), ["conversation", "security", "quality"]);
+});
+
 test("closing one of Claude's pull requests deletes its branch", () => {
   const effects = effectsOf("pull_request", payload({ action: "closed", pull_request: { number: 9, user: { login: "claude-autofix[bot]", type: "Bot" }, head: { ref: "claude/quality/tidy", sha: "abc", repo: repository } } }), context);
   assert.ok(effects.some((effect) => effect.kind === "delete-branch" && effect.branch === "claude/quality/tidy" && effect.sha === "abc"));
@@ -77,13 +127,55 @@ test("repeated events for the same work merge into one job that keeps the earlie
   assert.equal(merged.sha, "new");
 });
 
-test("a new repository gets a sweep right away and its weekly pass spread through the week", () => {
-  const record = newRecord("Mackery6969/game", 7, "main", now);
-  const first = scheduledWork(record, now);
+const hour = 60 * 60_000;
+const week = 7 * 24 * hour;
+
+test("a new repository gets a security sweep right away, and its other schedules spread out", () => {
+  const defaults = hubSettings(new Map());
+  const first = scheduledWork(newRecord("Mackery6969/game", 7, "main", now), now, defaults);
   assert.deepEqual(first.jobs.map((entry) => entry.task), ["security"]);
-  assert.deepEqual(scheduledWork(first.record, now + SECURITY_EVERY_MS - 1).jobs, []);
-  assert.deepEqual(scheduledWork(first.record, now + SECURITY_EVERY_MS).jobs.map((entry) => entry.task), ["security"]);
-  assert.ok(scheduledWork(first.record, now + QUALITY_EVERY_MS).jobs.some((entry) => entry.task === "quality"));
+  assert.deepEqual(scheduledWork(first.record, now + 6 * hour - 1, defaults).jobs.filter((entry) => entry.task === "security"), []);
+  assert.ok(scheduledWork(first.record, now + 6 * hour, defaults).jobs.some((entry) => entry.task === "security"));
+  const inAWeek = scheduledWork(first.record, now + week, defaults).jobs.map((entry) => entry.task);
+  for (const task of ["fix", "scan", "quality"]) assert.ok(inAWeek.includes(task as Job["task"]), task);
+});
+
+test("each repository's settings set its schedules, and a task that's off is never scheduled", () => {
+  const settings = hubSettings(parseConfig("tasks: [security, scan]\nsecurity-every: 1d\nscan-every: 2d\n"));
+  const record = { repository: "Mackery6969/game", installation: 7, defaultBranch: "main", last: { security: now - 24 * hour, scan: now - 47 * hour } };
+  assert.deepEqual(scheduledWork(record, now, settings).jobs.map((entry) => entry.task), ["security"]);
+  assert.deepEqual(scheduledWork(record, now + hour, settings).jobs.map((entry) => entry.task), ["security", "scan"]);
+  assert.ok(!scheduledWork(record, now + 30 * week, settings).jobs.some((entry) => entry.task === "fix" || entry.task === "quality"));
+});
+
+test("records from before per-task schedules keep their last security sweep and quality pass", () => {
+  const legacy = { repository: "Mackery6969/game", installation: 7, defaultBranch: "main", lastSecurity: now - hour, lastQuality: now - hour };
+  const work = scheduledWork(legacy, now, hubSettings(new Map()));
+  assert.ok(!work.jobs.some((entry) => entry.task === "security" || entry.task === "quality"));
+  assert.deepEqual([work.record.last?.security, work.record.last?.quality, "lastSecurity" in work.record], [now - hour, now - hour, false]);
+});
+
+test("alerts and issues go to security or fix by severity and labels", () => {
+  const securityAlert = enqueued("code_scanning_alert", payload({ action: "created", ref: "refs/heads/main", alert: { rule: { security_severity_level: "high" } } }));
+  const plainAlert = enqueued("code_scanning_alert", payload({ action: "created", ref: "refs/heads/main", alert: { rule: { security_severity_level: null } } }));
+  assert.deepEqual([securityAlert[0]?.task, plainAlert[0]?.task], ["security", "fix"]);
+  assert.equal(enqueued("issues", payload({ action: "labeled", issue: { number: 2, labels: [{ name: "Security" }] } }))[0]?.task, "security");
+  assert.equal(enqueued("issues", payload({ action: "opened", issue: { number: 3, labels: [{ name: "bug" }] } }))[0]?.task, "fix");
+});
+
+test("pushes become scan candidates with what they touched; Claude's own and its branches don't", () => {
+  const push = (ref: string, overrides: Partial<WebhookPayload> = {}) => effectsOf("push", payload({ ref, before: "aaa", after: "bbb", commits: [{ added: ["src/new.ts"], modified: ["src/a.ts", ".github/claude-autofix.yml"] }, { modified: ["src/a.ts"] }], ...overrides }), context).filter((effect) => effect.kind === "push");
+  const [effect] = push("refs/heads/feature/login");
+  assert.ok(effect?.kind === "push");
+  assert.deepEqual([effect.branch, effect.before, effect.after, effect.paths], ["feature/login", "aaa", "bbb", ["src/new.ts", "src/a.ts", ".github/claude-autofix.yml"]]);
+  assert.deepEqual(push("refs/heads/claude/scan/x"), []);
+  assert.deepEqual(push("refs/heads/main", { deleted: true }), []);
+  assert.deepEqual(push("refs/tags/v1"), []);
+  assert.deepEqual(push("refs/heads/main", { sender: { login: "claude-autofix[bot]", type: "Bot" } }), []);
+});
+
+test("coalesced pushes keep the earliest before, so one scan covers them all", () => {
+  assert.equal(mergeJobs(job({ task: "scan", ref: "feature", before: "first", sha: "b" }), job({ task: "scan", ref: "feature", before: "second", sha: "c" })).before, "first");
 });
 
 test("due jobs go oldest first, security ahead of quality, a few at a time", () => {

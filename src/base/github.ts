@@ -27,6 +27,7 @@ export interface PullRequestFile {
   filename: string;
   status: string;
   patch?: string;
+  changes?: number;
 }
 
 export interface CodeScanningAlert {
@@ -60,6 +61,46 @@ export interface Issue {
 export interface Comment {
   id: number;
   body: string | null;
+  user?: { login: string; type?: string } | null;
+  author_association?: string;
+  created_at?: string;
+}
+
+export interface Thread {
+  number: number;
+  title: string;
+  body: string | null;
+  state: string;
+  html_url: string;
+  created_at: string;
+  user: { login: string; type?: string } | null;
+  author_association?: string;
+  pull_request?: unknown;
+}
+
+export interface ReviewComment extends Comment {
+  path: string;
+  line: number | null;
+  original_line: number | null;
+  diff_hunk: string;
+  in_reply_to_id?: number;
+}
+
+export interface Review {
+  id: number;
+  body: string | null;
+  state: string;
+  user: { login: string; type?: string } | null;
+  author_association?: string;
+  submitted_at?: string;
+}
+
+export interface FailedJob {
+  id: number;
+  name: string;
+  workflow: string;
+  url: string;
+  completedAt: string;
 }
 
 export interface GitHubOptions {
@@ -126,6 +167,48 @@ export class GitHub {
     return comparison.files ?? [];
   }
 
+  thread(number: number): Promise<Thread> {
+    return this.request("GET", `/repos/${this.repository}/issues/${number}`);
+  }
+
+  reviewComments(number: number): Promise<ReviewComment[]> {
+    return this.paginate<ReviewComment>((page) => `/repos/${this.repository}/pulls/${number}/comments?per_page=100&page=${page}`, 10);
+  }
+
+  reviews(number: number): Promise<Review[]> {
+    return this.paginate<Review>((page) => `/repos/${this.repository}/pulls/${number}/reviews?per_page=100&page=${page}`, 5);
+  }
+
+  async commentOnCommit(sha: string, body: string): Promise<void> {
+    await this.request("POST", `/repos/${this.repository}/commits/${encodeURIComponent(sha)}/comments`, { body });
+  }
+
+  async createComment(number: number, body: string): Promise<void> {
+    await this.request("POST", `/repos/${this.repository}/issues/${number}/comments`, { body });
+  }
+
+  async replyToReviewComment(number: number, commentId: number, body: string): Promise<void> {
+    await this.request("POST", `/repos/${this.repository}/pulls/${number}/comments/${commentId}/replies`, { body });
+  }
+
+  async failedJobs(sha: string): Promise<FailedJob[]> {
+    const runs = await this.request<{ workflow_runs: Array<{ id: number; name: string; conclusion: string | null }> }>("GET", `/repos/${this.repository}/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=50`);
+    const failed: FailedJob[] = [];
+    for (const run of runs.workflow_runs.filter((candidate) => candidate.conclusion === "failure")) {
+      const jobs = await this.request<{ jobs: Array<{ id: number; name: string; conclusion: string | null; html_url: string; completed_at: string | null }> }>("GET", `/repos/${this.repository}/actions/runs/${run.id}/jobs?filter=latest&per_page=100`);
+      for (const job of jobs.jobs.filter((candidate) => candidate.conclusion === "failure")) failed.push({ id: job.id, name: job.name, workflow: run.name, url: job.html_url, completedAt: job.completed_at ?? "" });
+    }
+    return failed;
+  }
+
+  async jobLog(jobId: number): Promise<string> {
+    const response = await fetch(`${this.#apiUrl}/repos/${this.repository}/actions/jobs/${jobId}/logs`, {
+      headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${this.#token}`, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "claude-autofix" },
+    });
+    if (!response.ok) throw new GitHubError(`GET job ${jobId} logs failed (HTTP ${response.status})`, response.status);
+    return response.text();
+  }
+
   comments(number: number): Promise<Comment[]> {
     return this.paginate<Comment>((page) => `/repos/${this.repository}/issues/${number}/comments?per_page=100&page=${page}`, 10);
   }
@@ -146,6 +229,15 @@ export class GitHub {
 
   pullRequest(number: number): Promise<PullRequest & { draft?: boolean; user: { login: string; type: string }; base: { ref: string } }> {
     return this.request("GET", `/repos/${this.repository}/pulls/${number}`);
+  }
+
+  async codeScanningAlert(number: number): Promise<CodeScanningAlert | undefined> {
+    try {
+      return await this.request<CodeScanningAlert>("GET", `/repos/${this.repository}/code-scanning/alerts/${number}`);
+    } catch (error) {
+      if (error instanceof GitHubError && (error.status === 403 || error.status === 404)) return undefined;
+      throw error;
+    }
   }
 
   async openAlerts(ref?: string): Promise<CodeScanningAlert[]> {

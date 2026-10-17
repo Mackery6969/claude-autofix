@@ -1,14 +1,17 @@
+import type { HubSettings } from "../../src/base/settings.ts";
 import type { Job } from "./routing.ts";
 
-export const SECURITY_EVERY_MS = 6 * 60 * 60_000;
-export const QUALITY_EVERY_MS = 7 * 24 * 60 * 60_000;
+export const SCHEDULED_TASKS = ["security", "fix", "scan", "quality"] as const;
+export type ScheduledTask = (typeof SCHEDULED_TASKS)[number];
+const TASK_ORDER: Job["task"][] = ["conversation", "security", "fix", "scan", "quality"];
 
 export interface RepositoryRecord {
   repository: string;
   installation: number;
   defaultBranch: string;
-  lastSecurity: number;
-  lastQuality: number;
+  last?: Partial<Record<ScheduledTask, number>>;
+  lastSecurity?: number;
+  lastQuality?: number;
 }
 
 export function spread(repository: string, period: number): number {
@@ -18,33 +21,37 @@ export function spread(repository: string, period: number): number {
 }
 
 export function newRecord(repository: string, installation: number, defaultBranch: string, now: number): RepositoryRecord {
-  return {
-    repository,
-    installation,
-    defaultBranch,
-    lastSecurity: now - SECURITY_EVERY_MS,
-    lastQuality: now - QUALITY_EVERY_MS + spread(repository, QUALITY_EVERY_MS),
-  };
+  return { repository, installation, defaultBranch, last: { security: 0 } };
 }
 
-export function scheduledWork(record: RepositoryRecord, now: number): { jobs: Job[]; record: RepositoryRecord } {
+function lastRun(record: RepositoryRecord, task: ScheduledTask, every: number, now: number): number {
+  const stored = record.last?.[task] ?? (task === "security" ? record.lastSecurity : task === "quality" ? record.lastQuality : undefined);
+  return stored ?? now - every + spread(`${record.repository}|${task}`, every);
+}
+
+export function scheduledWork(record: RepositoryRecord, now: number, settings: HubSettings): { jobs: Job[]; record: RepositoryRecord } {
   const jobs: Job[] = [];
-  const next = { ...record };
-  const job = (task: Job["task"]): Job => ({ repository: record.repository, installation: record.installation, task, ref: record.defaultBranch, sha: "", pullRequest: undefined, sender: "", due: now });
-  if (now - record.lastSecurity >= SECURITY_EVERY_MS) {
-    jobs.push(job("security"));
-    next.lastSecurity = now;
+  const last: Partial<Record<ScheduledTask, number>> = { ...record.last };
+  let changed = record.last === undefined;
+  for (const task of SCHEDULED_TASKS) {
+    const every = settings.every[task];
+    if (every === undefined) continue;
+    const previous = lastRun(record, task, every, now);
+    if (record.last?.[task] === undefined) changed = true;
+    last[task] = previous;
+    if (now - previous < every) continue;
+    jobs.push({ repository: record.repository, installation: record.installation, task, ref: record.defaultBranch, sha: "", pullRequest: undefined, issue: undefined, sender: "", due: now });
+    last[task] = now;
+    changed = true;
   }
-  if (now - record.lastQuality >= QUALITY_EVERY_MS) {
-    jobs.push(job("quality"));
-    next.lastQuality = now;
-  }
-  return { jobs, record: next };
+  if (!changed) return { jobs, record };
+  const { lastSecurity: _security, lastQuality: _quality, ...rest } = record;
+  return { jobs, record: { ...rest, last } };
 }
 
 export function dueJobs(jobs: Job[], now: number, limit: number): Job[] {
   return jobs
     .filter((job) => job.due <= now)
-    .sort((a, b) => a.due - b.due || (a.task === b.task ? 0 : a.task === "security" ? -1 : 1))
+    .sort((a, b) => TASK_ORDER.indexOf(a.task) - TASK_ORDER.indexOf(b.task) || a.due - b.due)
     .slice(0, limit);
 }

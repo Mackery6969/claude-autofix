@@ -123,10 +123,14 @@ export abstract class ClaudeTask<Plan> {
 
   protected async finished(_plan: Plan): Promise<void> {}
 
-  protected async delivered(_plan: Plan, _pullUrl: string | undefined): Promise<void> {}
+  protected async delivered(_plan: Plan, _pullUrl: string | undefined, _report: ClaudeReport): Promise<void> {}
 
   protected needsClaude(_plan: Plan): boolean {
     return true;
+  }
+
+  protected readOnly(_plan: Plan): boolean {
+    return false;
   }
 
   protected get pushOptions(): Omit<PushOptions, "branch"> {
@@ -238,7 +242,7 @@ export abstract class ClaudeTask<Plan> {
     if (changedFiles(workspace).length === 0) {
       if (report.stoppedEarly) throw new ActionFailure(`Claude stopped (${report.stoppedEarly}) without changing anything: ${report.errors}`);
       log("Nothing was changed.");
-      await this.delivered(plan, undefined);
+      await this.delivered(plan, undefined, report);
       return "done";
     }
 
@@ -251,14 +255,14 @@ export abstract class ClaudeTask<Plan> {
 
     if (delivery.kind === "push") {
       await this.pushToBranch(delivery, text);
-      await this.delivered(plan, delivery.pullRequest ? `${this.settings.serverUrl}/${this.settings.github.repository}/pull/${delivery.pullRequest}` : undefined);
+      await this.delivered(plan, delivery.pullRequest ? `${this.settings.serverUrl}/${this.settings.github.repository}/pull/${delivery.pullRequest}` : undefined, report);
       return "done";
     }
     forcePush({ ...this.pushOptions, branch });
     const pull = await this.openPullRequest(branch, delivery.kind === "pull-request" ? delivery.base : await this.defaultBranch(), text);
     setOutput("pull-request-url", pull.html_url);
     setOutput("branch", branch);
-    await this.delivered(plan, pull.html_url);
+    await this.delivered(plan, pull.html_url, report);
     summary(`- [${text.title}](${pull.html_url})`);
     log(`Pull request: ${pull.html_url}`);
     return "done";
@@ -297,6 +301,7 @@ export abstract class ClaudeTask<Plan> {
       bashCommands: Object.values(helpers),
       credentials: this.settings.credentials,
       executable: installClaudeCode(join(this.settings.tempDirectory, "claude-code")),
+      readOnly: this.readOnly(plan),
     });
     if (outcome.kind === "limited") {
       await pauseRun(outcome.limit, this.settings.hub);

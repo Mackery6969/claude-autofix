@@ -1,4 +1,5 @@
 import { jobKey, mergeJobs, type Job } from "./routing.ts";
+import { hubSettings, type HubSettings } from "../../src/base/settings.ts";
 import type { RepositoryRecord } from "./schedule.ts";
 
 export interface KeyValueStore {
@@ -73,6 +74,8 @@ export class State {
   async forgetRepository(name: string): Promise<void> {
     await this.#store.delete(`repo:${name}`);
     await this.#store.delete(`cursor:${name}`);
+    await this.#store.delete(`settings:${name}`);
+    for (const task of ["scan", "quality"]) await this.#store.delete(`cursor:${name}|${task}`);
     for (const job of await this.jobs()) if (job.repository === name) await this.finish(job);
   }
 
@@ -113,11 +116,21 @@ export class State {
     await this.#store.put("synced", String(now));
   }
 
-  async cursor(repository: string): Promise<string> {
-    return (await this.#store.get(`cursor:${repository}`)) ?? "";
+  async cursor(repository: string, task: string): Promise<string> {
+    const saved = await this.#store.get(`cursor:${repository}|${task}`);
+    if (saved !== null) return saved;
+    return task === "quality" ? ((await this.#store.get(`cursor:${repository}`)) ?? "") : "";
   }
 
-  async saveCursor(repository: string, cursor: string): Promise<void> {
-    await this.#store.put(`cursor:${repository}`, cursor);
+  async saveCursor(repository: string, task: string, cursor: string): Promise<void> {
+    await this.#store.put(`cursor:${repository}|${task}`, cursor);
+  }
+
+  async settings(repository: string): Promise<HubSettings> {
+    return (await this.#read<HubSettings>(`settings:${repository}`)) ?? hubSettings(new Map());
+  }
+
+  async saveSettings(repository: string, settings: HubSettings): Promise<void> {
+    await this.#store.put(`settings:${repository}`, JSON.stringify(settings));
   }
 }

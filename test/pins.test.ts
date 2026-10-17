@@ -32,6 +32,14 @@ test("recognises unpinned-action alerts from CodeQL and Semgrep", () => {
   assert.ok(!isUnpinnedAction(mutableTag("a.yml", 1, "js/xss")));
 });
 
+test("recognises Scorecard's unpinned-action alerts, but not its other unpinned dependencies", () => {
+  const scorecard = (message: string): Alert => ({ ...mutableTag("a.yml", 1, "PinnedDependenciesID"), tool: "Scorecard", message });
+  assert.ok(isUnpinnedAction(scorecard("score is 8: GitHub-owned GitHubAction not pinned by hash\nRemediation tip: update your workflow")));
+  assert.ok(isUnpinnedAction(scorecard("score is 8: third-party GitHubAction not pinned by hash")));
+  assert.ok(!isUnpinnedAction(scorecard("score is 8: containerImage not pinned by hash")));
+  assert.ok(!isUnpinnedAction(scorecard("score is 8: pipCommand not pinned by hash")));
+});
+
 test("parses uses lines and leaves full SHAs, local and docker actions alone", () => {
   assert.deepEqual(parseUses("      - uses: actions/checkout@v7"), { prefix: "      - uses: ", quote: "", repository: "actions/checkout", subpath: "", ref: "v7" });
   assert.equal(parseUses("    uses: github/codeql-action/upload-sarif@v4 # old")?.subpath, "/upload-sarif");

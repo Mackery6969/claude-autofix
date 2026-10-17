@@ -4,7 +4,7 @@ author: "Mackery"
 
 inputs:
   task:
-    description: "What to do: security (fix or dismiss open code scanning alerts and Dependabot alerts, and work on issues) or quality (one code-quality pass)."
+    description: "What to do: security (security alerts, Dependabot alerts and security issues), fix (other alerts and issues), scan (Claude reviews code itself), quality (one code-quality pass) or conversation (reply in a pull request or issue, and change what's asked)."
     required: true
   claude-code-oauth-token:
     description: "Token for your Claude subscription, from `claude setup-token`. Without it (or anthropic-api-key) Claude is off for this repository."
@@ -85,25 +85,31 @@ inputs:
     description: "The repository to work on, as owner/name."
     required: true
   ref:
-    description: "the branch to work on. The default branch gets the scheduled work; any other branch only what differs from it."
+    description: "The branch to work on. The default branch gets the scheduled work; any other branch only what differs from it."
     default: ""
   sha:
-    description: "the commit of ref to work from."
+    description: "The commit of ref to work from."
     default: ""
   pull-request:
-    description: "the pull request to work on, if any."
+    description: "The pull request to work on, if any."
+    default: ""
+  issue:
+    description: "conversation: the issue to reply in."
+    default: ""
+  before:
+    description: "scan: the commit before a push, so only what the push changed is scanned."
     default: ""
   sender:
-    description: "who made the change, checked against pull-request-authors."
+    description: "Who made the change, checked against pull-request-authors."
     default: ""
   hub-url:
-    description: "the Claude Autofix hub to report pauses and quality progress to."
+    description: "The Claude Autofix hub to report pauses and quality progress to."
     default: ""
   hub-secret:
-    description: "the secret shared with the hub, used to sign reports."
+    description: "The secret shared with the hub, used to sign reports."
     default: ""
   cursor:
-    description: "where the last quality pass stopped, passed on by the hub."
+    description: "Where the last quality pass stopped, passed on by the hub."
     default: ""
 
 outputs:
@@ -114,7 +120,7 @@ outputs:
   branch:
     description: "The branch that pull request comes from."
   paused:
-    description: "true when Claude hit a usage limit and the run paused."
+    description: "True when Claude hit a usage limit and the run paused."
   resume-at:
     description: "When a paused run starts again (ISO 8601)."
   claude-cost-usd:

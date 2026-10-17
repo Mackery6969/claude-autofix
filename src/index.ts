@@ -9,19 +9,31 @@ import { changeSetFromPullRequest, type ChangeSet, type PullRequestMode } from "
 import type { TaskSettings } from "./base/task.ts";
 import { parseScannerFilter } from "./tasks/alerts.ts";
 import { DEFAULT_ISSUE_LABELS } from "./tasks/issues.ts";
+import { ConversationTask } from "./tasks/conversation.ts";
 import { QualityTask } from "./tasks/quality.ts";
-import { SecurityTask } from "./tasks/security.ts";
+import { ScanTask } from "./tasks/scan.ts";
+import { SecurityTask, type SecurityScope } from "./tasks/security.ts";
 import { SOURCE_EXTENSIONS } from "./tasks/sources.ts";
 
 const CLAUDE_TASKS = {
-  security: { branchPrefix: "claude/security", labels: ["security", "automated"], model: "claude-opus-5-5", budget: 5 },
-  quality: { branchPrefix: "claude/quality", labels: ["code-quality", "automated"], model: "claude-sonnet-5-5", budget: 3 },
+  security: { branchPrefix: "claude/security", labels: ["security", "automated"], model: "claude-opus-5-5", budget: 5, commitType: "fix(security)" },
+  fix: { branchPrefix: "claude/fix", labels: ["fix", "automated"], model: "claude-sonnet-5-5", budget: 3, commitType: "fix" },
+  scan: { branchPrefix: "claude/scan", labels: ["scan", "automated"], model: "claude-opus-5-5", budget: 3, commitType: "fix" },
+  quality: { branchPrefix: "claude/quality", labels: ["code-quality", "automated"], model: "claude-sonnet-5-5", budget: 3, commitType: "refactor" },
 };
 
 type ClaudeTaskName = keyof typeof CLAUDE_TASKS;
+type TaskName = ClaudeTaskName | "conversation";
 
-function isClaudeTask(name: string): name is ClaudeTaskName {
-  return Object.hasOwn(CLAUDE_TASKS, name);
+function isTask(name: string): name is TaskName {
+  return name === "conversation" || Object.hasOwn(CLAUDE_TASKS, name);
+}
+
+async function flavorOf(task: TaskName, github: GitHub, job: HubJob): Promise<{ flavor: ClaudeTaskName; commitType: string }> {
+  if (task !== "conversation") return { flavor: task, commitType: CLAUDE_TASKS[task].commitType };
+  const head = job.pullRequest ? (await github.pullRequest(job.pullRequest)).head.ref : "";
+  const flavor = (Object.keys(CLAUDE_TASKS) as ClaudeTaskName[]).find((name) => head.startsWith(`${CLAUDE_TASKS[name].branchPrefix}/`));
+  return flavor ? { flavor, commitType: CLAUDE_TASKS[flavor].commitType } : { flavor: "fix", commitType: "fix" };
 }
 
 function required(name: string): string {
@@ -34,7 +46,8 @@ function jobFromInputs(task: string): HubJob {
   const repository = required("repository");
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) throw new ActionFailure(`Input repository must be owner/name (got "${repository}").`);
   const pullRequest = numberInput("pull-request", 0);
-  return { repository, task, ref: input("ref"), sha: input("sha"), pullRequest: pullRequest || undefined, sender: input("sender") };
+  const issue = numberInput("issue", 0);
+  return { repository, task, ref: input("ref"), sha: input("sha"), before: input("before"), pullRequest: pullRequest || undefined, issue: issue || undefined, sender: input("sender") };
 }
 
 function hubFor(job: HubJob): Hub | undefined {
@@ -57,7 +70,7 @@ async function changeSetFor(github: GitHub, job: HubJob): Promise<ChangeSet | un
 
 async function main(): Promise<void> {
   const task = input("task");
-  if (!isClaudeTask(task)) return fail(`Input task must be security or quality (got "${task}").`);
+  if (!isTask(task)) return fail(`Input task must be security, fix, scan, quality or conversation (got "${task}").`);
 
   const job = jobFromInputs(task);
   const githubToken = required("github-token");
@@ -69,8 +82,9 @@ async function main(): Promise<void> {
   if (!taskEnabled(config, task)) return notice(`Nothing to do: ${CONFIG_FILE} turns the ${task} task off.`);
   applyConfig(config);
 
-  const defaults = CLAUDE_TASKS[task];
-  const ref = job.ref || (await github.defaultBranch());
+  const { flavor, commitType } = await flavorOf(task, github, job);
+  const defaults = CLAUDE_TASKS[flavor];
+  const ref = task === "conversation" || !job.ref ? await github.defaultBranch() : job.ref;
   const settings: TaskSettings = {
     workspace,
     tempDirectory: join(process.env.RUNNER_TEMP ?? tmpdir(), "claude-autofix"),
@@ -80,7 +94,7 @@ async function main(): Promise<void> {
     serverUrl: process.env.GITHUB_SERVER_URL ?? "https://github.com",
     runId: requiredEnv("GITHUB_RUN_ID"),
     runRepository: process.env.GITHUB_REPOSITORY ?? job.repository,
-    changes: await changeSetFor(github, { ...job, ref }),
+    changes: task === "conversation" ? undefined : await changeSetFor(github, { ...job, ref }),
     ref,
     model: input("model", defaults.model),
     maxBudgetUsd: numberInput("max-budget-usd", defaults.budget),
@@ -93,7 +107,7 @@ async function main(): Promise<void> {
     hub: hubFor(job),
   };
 
-  const runner = task === "security" ? securityTask(settings) : qualityTask(settings);
+  const runner = task === "conversation" ? conversationTask(settings, job, commitType) : task === "quality" ? qualityTask(settings) : task === "scan" ? scanTask(settings, job) : securityTask(settings, task);
   await runner.run();
 }
 
@@ -103,8 +117,29 @@ function pullRequestMode(): PullRequestMode {
   return mode;
 }
 
-function securityTask(settings: TaskSettings): SecurityTask {
+function sourceExtensions(): string[] {
+  return input("extensions") ? input("extensions").split(/[\s,]+/).filter(Boolean).map((extension) => extension.replace(/^\./, "").toLowerCase()) : SOURCE_EXTENSIONS;
+}
+
+function scanTask(settings: TaskSettings, job: HubJob): ScanTask {
+  return new ScanTask(settings, {
+    paths: multilineInput("scan-paths"),
+    maxLines: numberInput("scan-lines", 1500),
+    batches: numberInput("scan-batches", 2),
+    exclude: multilineInput("exclude"),
+    extensions: sourceExtensions(),
+    before: job.before ?? "",
+    sha: job.sha,
+    pullRequestMode: pullRequestMode(),
+    pullRequestAuthors: multilineInput("pull-request-authors"),
+  });
+}
+
+function securityTask(settings: TaskSettings, scope: SecurityScope): SecurityTask {
+  const other = scope === "security" ? "fix" : "security";
   return new SecurityTask(settings, {
+    scope,
+    coveredBy: [CLAUDE_TASKS[other].branchPrefix],
     maxFindings: numberInput("max-findings", 10),
     groupingModel: input("grouping-model", "claude-haiku-5-5"),
     scanners: parseScannerFilter(input("code-scanning-tools", "all")),
@@ -116,8 +151,21 @@ function securityTask(settings: TaskSettings): SecurityTask {
   });
 }
 
+function conversationTask(settings: TaskSettings, job: HubJob, commitType: string): ConversationTask {
+  const thread = job.pullRequest ?? job.issue;
+  if (!thread) throw new ActionFailure("A conversation needs a pull-request or issue number.");
+  const prefixes = [CLAUDE_TASKS.security.branchPrefix, CLAUDE_TASKS.quality.branchPrefix, input("branch-prefix")].filter(Boolean).map((prefix) => prefix.replace(/\/+$/, ""));
+  return new ConversationTask(settings, {
+    thread,
+    pullRequestAuthors: multilineInput("pull-request-authors"),
+    branchPrefixes: [...new Set(prefixes)],
+    commitType,
+    scanners: parseScannerFilter(input("code-scanning-tools", "all")),
+  });
+}
+
 function qualityTask(settings: TaskSettings): QualityTask {
-  const extensions = input("extensions") ? input("extensions").split(/[\s,]+/).filter(Boolean).map((extension) => extension.replace(/^\./, "").toLowerCase()) : SOURCE_EXTENSIONS;
+  const extensions = sourceExtensions();
   return new QualityTask(settings, {
     areas: multilineInput("areas"),
     area: input("area"),

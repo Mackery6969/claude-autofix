@@ -2,8 +2,11 @@
 
 Puts Claude to work on your repositories the way CodeQL's default setup and Dependabot work: install a GitHub App on a repository and it starts, with nothing to commit there, and every change it makes arrives as a pull request for you to review.
 
-- **Security:** works through what GitHub code scanning reports (CodeQL, GML Code Scanner, any scanner that uploads to the Security tab), Dependabot alerts Dependabot can't fix itself, and your repository's open issues. As soon as an alert appears or an issue is opened, Claude fixes the real problems, dismisses false positives with a reason, and makes what progress it can on bug reports. On your own pull requests and branches, it fixes what they introduce.
+- **Security:** works through security alerts from GitHub code scanning (CodeQL, GML Code Scanner, any scanner that uploads to the Security tab), Dependabot alerts Dependabot can't fix itself, and issues labelled `security` or `critical`. As soon as one appears, Claude fixes the real problems and dismisses false positives with a reason. On your own pull requests and branches, it fixes what they introduce. Security always goes first.
+- **Fixes:** the same for everything else: scanner errors, warnings and notes, and bug, accessibility, polishing and enhancement issues, where Claude makes what progress it can.
+- **Scanning:** Claude also reads your code itself, looking for vulnerabilities and bugs the scanners miss. It works through the whole project a few batches at a time, spread out so it doesn't use too much too fast, and can look at every push too, starting from what changed.
 - **Code quality:** once a week, Claude makes a small, behaviour-preserving refactoring pass over the next batch of files, working through the whole codebase a batch at a time, so even large repositories stay cheap and reviewable. On your own pull requests, it tidies the code they change.
+- **Conversations:** each of Claude's pull requests, and each issue it has taken part in, is a conversation. Comment, review or leave an inline note and Claude replies; ask for a change and it pushes it. Failed checks and new code scanning alerts on its own pull requests come back to it the same way.
 - **Runs on your Claude subscription,** and only on repositories you choose. Hitting a usage limit doesn't fail anything: all work waits until the limit resets, then carries on.
 
 Every change gets a branch, commit and pull request named after what it does, its branch is deleted once the pull request is merged or closed, and nothing is merged for you. Security fixes and refactoring never share a pull request.
@@ -66,7 +69,7 @@ Nothing is committed to the repositories it works on, and every part is deployed
 ```bash
 node scripts/hub.ts list                           # repositories seen, which are permitted, the queue and any pause
 node scripts/hub.ts sync                           # pick up every repository the app is installed on (also runs daily)
-node scripts/hub.ts run owner/repo quality         # queue a pass now (optionally on a branch)
+node scripts/hub.ts run owner/repo scan            # queue security, fix, scan or quality now (optionally on a branch)
 node scripts/hub.ts permit someone/their-project   # let the hub work on a repository you don't own
 node scripts/hub.ts revoke someone/their-project   # stop, and drop anything queued for it
 ```
@@ -95,7 +98,7 @@ That creates `<you>/claude-autofix-runner` (private), generates the hub's secret
 
 **4. Deploy:** run **Deploy hub** (`gh workflow run hub.yml`). Its summary shows the hub's URL. From then on it runs by itself whenever a commit to `main` changes the hub, the runner workflow or the deploy scripts, and on every release.
 
-**5. Connect the app:** turn its webhook on with `<hub URL>/webhook` and the secret in `~/.claude-autofix/webhook-secret`, and subscribe to **Code scanning alert**, **Dependabot alert**, **Issues** and **Pull request** events.
+**5. Connect the app:** turn its webhook on with `<hub URL>/webhook` and the secret in `~/.claude-autofix/webhook-secret`, and subscribe to **Code scanning alert**, **Dependabot alert**, **Issue comment**, **Issues**, **Pull request**, **Pull request review**, **Pull request review comment**, **Push** and **Workflow run** events.
 
 The hub picks up the repositories within a day, or straight away with `node scripts/hub.ts sync`, and each gets its first security sweep within minutes.
 
@@ -107,17 +110,20 @@ Optionally, write down your rules: Claude reads each repository's `CLAUDE.md`, a
 
 | Event | Work |
 | --- | --- |
-| A code scanning alert appears on the default branch | A security sweep, a few minutes later so a whole scan's alerts go into one run. |
-| A code scanning alert appears on another branch or a pull request | Security fixes for the lines that branch or pull request changes. |
-| An issue is opened, labelled or reopened | A security sweep (which includes issues). |
+| A code scanning alert appears on the default branch | A security sweep for a security alert, a fix sweep for anything else, a few minutes later so a whole scan's alerts go into one run. |
+| A code scanning alert appears on another branch or a pull request | Security fixes or fixes for the lines that branch or pull request changes. |
+| An issue is opened, labelled or reopened | A security sweep for `security` and `critical` issues, a fix sweep for the rest. |
+| You push, with `scan-on-push` on | A scan of what the push changed, a couple of minutes later so quick pushes share one scan. |
 | A Dependabot alert opens | A security sweep after an hour, giving Dependabot time to open its own pull request. |
 | You open a pull request, or mark one ready | A code-quality pass over what it changes. Marking a draft ready (or reopening) also starts a security pass, for the alerts that appeared while it was a draft. |
+| Someone comments on, or reviews, one of Claude's pull requests, comments on an issue Claude has taken part in, or mentions the app anywhere | A conversation: Claude replies, and changes what a maintainer asks for. See [Conversations](#conversations). |
+| A check fails on one of Claude's pull requests, or a scan finds a new alert on a line it changed | A conversation: Claude reads the failing job's log or the alert and pushes a fix. |
 | One of Claude's pull requests is closed | The hub deletes its branch. |
-| Every 6 hours / once a week | A security sweep / the next code-quality batch, spread through the week per repository. |
+| On each repository's schedule | A security sweep and a fix sweep (every 6 hours), a scanning lap and a code-quality batch (every week), spread out per repository. |
 
 Draft pull requests are left alone: code scanning still runs on them, but Claude doesn't change a branch you're still working on. Mark it ready and both passes run.
 
-Nothing Claude does starts Claude again: the hub ignores events the app caused, and comments and reviews never start work.
+Nothing Claude does starts Claude again: the hub ignores comments and events the app caused. The one exception is a failed check on its own pull request, which it gets to fix, up to 3 times in a row.
 
 The runner uses `ubuntu-latest` with Node 24 and Java 21 added; it already has Python, Go and .NET. A `verify-command` needing anything else should set it up itself.
 
@@ -127,16 +133,29 @@ Put settings in `.github/claude-autofix.yml`, like CodeQL's config file. Every k
 
 ```yaml
 verify-command: npm ci && npm test
-tasks: [security, quality]
+tasks: [security, fix, scan, conversation]   # leave quality out to turn it off
+fix-every: 1d
+scan-on-push: true
+scan-paths:
+  - src/**
 exclude:
   - vendor
 instructions: |
   Prefer early returns over nested conditionals.
 ```
 
+The hub reads this file from the default branch, and again whenever a push changes it.
+
 | Setting | Default | Description |
 | --- | --- | --- |
-| `tasks` | `security`, `quality` | Which tasks run on this repository. |
+| `tasks` | all five | Which tasks run on this repository: `security`, `fix`, `scan`, `quality`, `conversation`. Leave one out to turn it off, schedule and all. |
+| `security-every`, `fix-every`, `scan-every`, `quality-every` | `6h`, `6h`, `7d`, `7d` | How often each runs by itself, like `30m`, `6h`, `1d` or `2w` (15 minutes at least), or `off` to only run it on events or when asked. For `scan`, how long to wait between laps of the whole project. |
+| `scan-on-push` | `false` | scan: also scan what each push changes, on any branch. |
+| `scan-paths` | all source files | scan: only these paths, as patterns like `src/**` or `*.gml`, one per line. Push scans only start for pushes touching them. |
+| `scan-branches` | all branches | scan: only scan pushes to these branches, as patterns. |
+| `scan-lines` | `1500` | scan: how much one scan reads: lines of code per batch, or changed lines for a push or pull request. |
+| `scan-batches` | `2` | scan: batches per scheduled run. |
+| `scan-pace` | `1h` | scan: the gap between runs while a lap is under way. |
 | `verify-command` | | Shell commands that must pass after Claude's changes, such as `npm ci && npm test`. Claude runs it too, and fixes or reverts what breaks it. Keep its build output gitignored. |
 | `model` | `claude-opus-5-5` (security), `claude-sonnet-5-5` (quality) | Claude model. |
 | `max-budget-usd` | `5` (security), `3` (quality) | Stop Claude once a run has used this much, at API prices. On a subscription it caps how much of your usage one run can take. |
@@ -163,15 +182,15 @@ instructions: |
 
 Claude finishes each run by writing a description whose first line is a title naming the change. That title becomes:
 
-- the branch, under `claude/security/` or `claude/quality/` (set with `branch-prefix`),
+- the branch, under `claude/security/`, `claude/fix/`, `claude/scan/` or `claude/quality/` (set with `branch-prefix`),
 - the commit subject, as `fix(security): …` or `refactor: …`, with the description as the commit body,
 - the pull request title.
 
 Runs that only pin actions are named for that, like **Pin 2 GitHub Actions to commit SHAs**. If two changes would get the same branch name, the later one gets `-2`, `-3` and so on, so one pull request never overwrites another. When a pull request from one of these branches is merged or closed, the branch is deleted, the same way Dependabot cleans up after itself. Nothing else in the repository is touched: other people's branches stay.
 
-### Security
+### Security and fixes
 
-The security task doesn't scan anything itself. It reads what's already there:
+The security and fix tasks work the same way, on different things: security takes alerts with a security severity, Dependabot alerts, and `security` and `critical` issues; fix takes every other alert and issue. They have their own queues, pull requests and settings, and the hub always runs security first. Neither scans anything itself (that's [Scanning](#scanning)). They read what's already there:
 
 - **Open code scanning alerts** from every scanner that reports to the Security tab: CodeQL (including GitHub's default setup), GML Code Scanner, and so on. Limit which scanners count with `code-scanning-tools`.
 - **Open Dependabot alerts** that Dependabot can't fix itself (see below). Turn this off with `dependabot-alerts: false`.
@@ -203,6 +222,21 @@ Actions used with a tag (`uses: actions/checkout@v7`) get flagged because a tag 
 
 **On pull requests and branches**, only alerts on lines that differ from the base count: a pull request's base branch, or the default branch for a branch (after a scanner runs on a push to it, or `node scripts/hub.ts run owner/repo security <branch>`). A branch with an open pull request is treated as that pull request. On a pull request these are the same alerts GitHub comments on. If the pull request is from a branch in this repository, opened by someone in `pull-request-authors` (by default, you), and isn't a draft, Claude fixes them and pushes the fix to the pull request's branch (or opens a separate pull request into it, with `pull-request-mode: pull-request`), with one summary comment it keeps up to date. Everyone else's pull requests are left alone; GitHub already shows code scanning results on them.
 
+### Scanning
+
+Here Claude reads the code itself, like a reviewer, looking for vulnerabilities (injection, missing authorization or validation, unsafe deserialization, path traversal, secrets, races) and real bugs (crashes, wrong results, leaks). It only reports problems it's confident are real, with a concrete way they go wrong, and fixes what it can with the smallest correct change.
+
+**Laps of the whole project.** A scheduled or requested scan works through the repository's source files a batch at a time (about `scan-lines` lines each), picking up where the last batch stopped, so every file gets read in turn without spending much at once:
+
+1. Each run scans `scan-batches` batches, each in its own Claude session, and the hub saves where it stopped after every batch.
+2. Until the lap is done, the hub queues the next run `scan-pace` later (an hour by default), so a large project is scanned steadily over hours or days instead of all at once.
+3. When a usage limit hits mid-lap, the run stops and the hub starts again from the same place once the limit resets.
+4. Once every file has been scanned, the next lap starts `scan-every` later (a week by default).
+
+**Pushes, pull requests and branches.** With `scan-on-push`, each push is scanned too, but only what it changed: Claude starts from the changed lines and the code around them, and reads further (a function a change calls, where a changed value ends up) only as far as it needs to. `scan-lines` here counts changed lines; the biggest changes go first, and anything past the limit is listed as not scanned. Use `scan-paths` and `scan-branches` to scan only the pushes you care about.
+
+What it fixes arrives as a pull request (or, for a push to your own branch, a commit on it, like other fixes). What it can't fix is posted as a comment on the pushed commit, or, for a lap, as an issue, so you can talk it over with Claude there.
+
 ### Code quality
 
 **Weekly passes** work through the codebase in batches of about `batch-lines` lines (1,500 by default):
@@ -222,6 +256,20 @@ A huge repository simply takes more weeks to get through. To go faster, raise `b
 
 It never force-pushes your branch: if you pushed while Claude was working, it stops and leaves your commits alone. It runs once when a pull request is opened, reopened or marked ready, not on every push.
 
+### Conversations
+
+Every one of Claude's pull requests, and every issue it has opened or commented on, is a conversation with it. Anywhere else, mention the app (`@<app slug>`, such as `@claude-code-scanning`) in an issue, a pull request, a comment or a review, and Claude joins that conversation; after that, it follows it without being mentioned again. There's nothing extra to store: each time, Claude reads the whole thread (the description, comments, reviews and inline review threads), with what arrived since its last reply marked as new. So a conversation lasts as long as the pull request or issue does, closed or not.
+
+- **Anyone gets a reply.** Only maintainers (people with write access, or anyone in `pull-request-authors`) can get Claude to change code. Text from anyone else is treated as something to answer, never as instructions; a request for a change from them gets a reply saying a maintainer has to ask.
+- **On Claude's open pull requests**, changes are pushed to its branch. Inline review comments get answers in their own threads, and Claude posts one comment summing up what it did.
+- **On someone else's pull request** it was asked into, Claude pushes what a maintainer asks for to its branch, if the branch is in the same repository; on a fork's pull request it can only reply.
+- **On issues**, Claude replies, and if a maintainer asks for a change, it updates its open pull request for that issue or opens a new one that refers to it.
+- **Dismissing alerts:** a maintainer can tell Claude an alert is a false positive or not worth fixing (on a line the pull request changes, or by number or link, like "alert #244"), and Claude dismisses it on GitHub with a reason, listing it in its reply with a link to reopen it.
+- **Starting work:** ask, say, "@claude-code-scanning run a security sweep" or "do a quality pass on this branch", and Claude queues it with the hub; it starts within minutes.
+- **On closed or merged pull requests**, Claude still replies, but can't push; it says when something needs a new pull request.
+- **Failed checks and new alerts** on Claude's open pull requests come back to it like comments: it reads the end of the failing job's log, or the alert, and pushes a fix.
+- **It won't talk to itself forever.** Without a maintainer in between, Claude replies at most 3 times in a row, which covers a check it can't make pass and a stranger trying to run up your usage. Several comments left within a minute or two get one reply.
+
 ### Usage limits
 
 When Claude reports a usage limit, the run stops without committing anything and tells the hub when the limit resets. The hub holds every repository's queued work until then, since they all spend the same subscription, and starts with the run that paused. If that run hits the limit again (a weekly limit, say), it pauses again with the new reset time.
@@ -231,6 +279,7 @@ Nothing sleeps in a job waiting for a limit, and Claude can't start subagents, s
 ## Security notes
 
 - Claude only works on repositories the app is installed on and the hub permits. On pull requests and branches, it only changes same-repository ones by the people in `pull-request-authors`.
+- In conversations, only maintainers can get Claude to change anything. Replies to anyone else run with read-only tools, and anything they changed would be thrown away.
 - Anyone can open an issue on a public repository, so issue text reaches Claude as a description of a problem only, and everything still arrives as a pull request you review. Issues are only picked up if they carry one of `issue-labels`, and each is handled once, so a flood of unlabelled issues costs nothing.
 - Claude gets file tools (read, edit, search) and Bash restricted to a handful of commands: your `verify-command` and read-only `git diff`/`git status`/`git log`. It can't start subagents, browse the web, or push.
 - The action's inputs, tokens and runner credentials are removed from the environment Claude and your `verify-command` see. Claude can't read `.git/`, and the runner checks out with `persist-credentials: false` so no token is left in the checkout.

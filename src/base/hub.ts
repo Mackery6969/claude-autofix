@@ -8,6 +8,8 @@ export interface HubJob {
   ref: string;
   sha: string;
   pullRequest: number | undefined;
+  issue?: number | undefined;
+  before?: string;
   sender: string;
 }
 
@@ -18,7 +20,7 @@ export interface Hub {
   cursor: string;
 }
 
-export type HubReport = { kind: "paused"; resumeAt: string } | { kind: "cursor"; cursor: string };
+export type HubReport = { kind: "paused"; resumeAt: string } | { kind: "cursor"; cursor: string; lapDone?: boolean } | { kind: "queue"; task: "security" | "quality"; ref: string };
 
 export function sign(secret: string, body: string): string {
   return `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;

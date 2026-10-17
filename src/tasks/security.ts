@@ -24,11 +24,15 @@ import {
   type DependencyVerdict,
 } from "./dependencies.ts";
 import { applyGrouping, byPriority, groupByRule, groupingPrompt, pinGroup, type Group } from "./groups.ts";
-import { actionableIssues, commentOnIssues, issueInstructions, issueKey, issuesAlreadyAnswered, issuesSection, ISSUES_FILE, OUTCOMES_FILE, readOutcomes, writeIssuesFile, type IssueOutcome, type IssueWork } from "./issues.ts";
-import { handledMarker, keysInMarker } from "./markers.ts";
+import { actionableIssues, commentOnIssues, issueInstructions, issueKey, issuesAlreadyAnswered, issuesSection, isSecurityIssue, ISSUES_FILE, OUTCOMES_FILE, readOutcomes, writeIssuesFile, type IssueOutcome, type IssueWork } from "./issues.ts";
+import { coverage, handledMarker, keysInMarker } from "./markers.ts";
 import { applyPins, isUnpinnedAction, resolvePins, type Pin } from "./pins.ts";
 
+export type SecurityScope = "security" | "fix";
+
 export interface SecurityOptions {
+  scope: SecurityScope;
+  coveredBy: string[];
   maxFindings: number;
   groupingModel: string;
   scanners: ScannerFilter;
@@ -55,12 +59,17 @@ interface SecurityPlan {
 const GROUPING_BUDGET_USD = 0.5;
 
 export class SecurityTask extends ClaudeTask<SecurityPlan> {
-  protected readonly name = "security";
+  protected readonly name: SecurityScope;
   readonly #options: SecurityOptions;
 
   constructor(settings: TaskSettings, options: SecurityOptions) {
     super(settings);
     this.#options = options;
+    this.name = options.scope;
+  }
+
+  #inScope(alert: Alert): boolean {
+    return alert.security === (this.#options.scope === "security");
   }
 
   protected async plan(): Promise<SecurityPlan[] | undefined> {
@@ -72,9 +81,10 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
     }
 
     const { github, force } = this.settings;
-    const alerts = fromScanners(await github.openAlerts(), this.#options.scanners);
-    const dependencies = this.#options.handleDependabot ? await this.dependabotAlertsForClaude() : [];
-    const issues = this.#options.handleIssues ? actionableIssues(await github.openIssues(), this.#options.issueLabels).filter((issue) => !this.isOwn(issue.author)) : [];
+    const security = this.#options.scope === "security";
+    const alerts = fromScanners(await github.openAlerts(), this.#options.scanners).filter((alert) => this.#inScope(alert));
+    const dependencies = security && this.#options.handleDependabot ? await this.dependabotAlertsForClaude() : [];
+    const issues = this.#options.handleIssues ? actionableIssues(await github.openIssues(), this.#options.issueLabels).filter((issue) => !this.isOwn(issue.author) && isSecurityIssue(issue) === security) : [];
     if (alerts.length === 0 && dependencies.length === 0 && issues.length === 0) {
       log("No open code scanning alerts, Dependabot alerts or issues to work on.");
       return undefined;
@@ -113,12 +123,14 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
   }
 
   private async handledKeys(): Promise<Set<string>> {
-    const pulls = await this.ownPullRequests("all");
+    const pulls = [...(await this.ownPullRequests("all")), ...(await Promise.all(this.#options.coveredBy.map((prefix) => this.settings.github.pullRequestsFromBranches(`${prefix}/`, "all")))).flat()];
     const escalations = await this.settings.github.issuesCreatedBy(this.settings.author.name).catch((error: unknown) => {
       warn(`Couldn't list the issues Claude opened, so earlier escalations may be repeated: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     });
-    return new Set([...pulls, ...escalations].flatMap((item) => keysInMarker(item.body ?? "")));
+    const covered = coverage([...pulls, ...escalations], new Date());
+    for (const [key, attempts] of covered.retry) log(`Trying ${key} again: ${attempts.map((number) => `#${number}`).join(", ")} was merged to fix it, but it's still open.`);
+    return covered.skip;
   }
 
   private isOwn(login: string): boolean {
@@ -154,7 +166,7 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
     const { github } = this.settings;
     const name = changeSetName(changes);
     const changed = changedLines(await filesChanged(github, changes));
-    const alerts = fromScanners(await github.openAlerts(alertsRef(changes)), this.#options.scanners).filter((alert) => touchesChangedLines(changed, alert.path, alert.startLine, alert.endLine));
+    const alerts = fromScanners(await github.openAlerts(alertsRef(changes)), this.#options.scanners).filter((alert) => this.#inScope(alert) && touchesChangedLines(changed, alert.path, alert.startLine, alert.endLine));
     if (alerts.length === 0) {
       log(`No code scanning alerts on the lines ${name} changes compared with ${changes.base}.`);
       return undefined;

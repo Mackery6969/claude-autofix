@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Alert } from "./alerts.ts";
 
 const UNPINNED_ACTION_RULES = [/^actions\/unpinned-tag$/, /github-actions-mutable-action-tag$/];
+const SCORECARD_PINNING = { rule: /^PinnedDependenciesID$/, message: /GitHubAction not pinned by hash/i };
 const USES = /^(?<prefix>\s*(?:-\s+)?uses:\s*)(?<quote>["']?)(?<owner>[\w.-]+)\/(?<repo>[\w.-]+)(?<subpath>\/[^@\s"']*)?@(?<ref>[^\s"'#]+)\k<quote>\s*(?:#.*)?$/;
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
@@ -26,6 +27,7 @@ export interface UsesReference {
 }
 
 export function isUnpinnedAction(alert: Alert): boolean {
+  if (SCORECARD_PINNING.rule.test(alert.rule)) return SCORECARD_PINNING.message.test(alert.message);
   return UNPINNED_ACTION_RULES.some((rule) => rule.test(alert.rule));
 }
 

@@ -47,6 +47,10 @@ export function issueRank(labels: string[], order: string[]): number | undefined
   return 4 + Math.min(Number.isFinite(best) ? best : 2, 2);
 }
 
+export function isSecurityIssue(issue: IssueWork): boolean {
+  return issue.labels.some((label) => SECURITY_LABELS.includes(label));
+}
+
 export function actionableIssues(issues: Issue[], order: string[]): IssueWork[] {
   return issues.flatMap((issue) => {
     const labels = labelNames(issue);

@@ -12,7 +12,8 @@
 
 ## Layout
 - `src/base/` is the shared base: `ClaudeTask` runs the pipeline (plan, run Claude, pause on usage limits, enforce paths, verify, open the pull request).
-- `src/tasks/` holds the tasks that extend it (`security`, `quality`).
+- `src/tasks/` holds the tasks that extend it: `security` (which also runs as `fix`, for non-security alerts and issues), `scan` (Claude reviews code itself), `quality`, and `conversation` (replies in pull requests and issues).
+- `src/base/settings.ts` parses `.github/claude-autofix.yml`; both the action and the hub use it, so it must stay free of Node-only imports.
 - `worker/` is the hub, a Cloudflare Worker: it receives the GitHub App's webhooks, queues and schedules work, and dispatches it to the runner repository, which runs the action from `examples/runner.yml`. The action only runs that way.
 - `dist/` is never committed on branches; the release workflow builds it into each tag.
 

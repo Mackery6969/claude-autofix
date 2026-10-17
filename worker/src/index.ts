@@ -1,6 +1,7 @@
 import { encodeRef, GitHubApiError, GitHubApp } from "./github.ts";
-import { effectsOf, isIgnored, type Effect, type Job, type Task, type WebhookPayload } from "./routing.ts";
-import { dueJobs, newRecord, scheduledWork } from "./schedule.ts";
+import { effectsOf, isClaudeBranch, isIgnored, type Effect, type Job, type Task, type WebhookPayload } from "./routing.ts";
+import { CONFIG_FILE, ConfigError, hubSettings, matchesAny, parseConfig, type HubSettings } from "../../src/base/settings.ts";
+import { dueJobs, newRecord, scheduledWork, type RepositoryRecord } from "./schedule.ts";
 import { GITHUB_SIGNATURE_HEADER, REPORT_SIGNATURE_HEADER, verifySignature } from "./signatures.ts";
 import { State, type KeyValueStore } from "./state.ts";
 
@@ -24,10 +25,13 @@ interface ScheduledEvent {
 }
 
 interface HubReport {
-  job: { repository: string; task: string; ref: string; sha: string; pullRequest?: number; sender: string };
-  kind: "paused" | "cursor";
+  job: { repository: string; task: string; ref: string; sha: string; before?: string; pullRequest?: number; issue?: number; sender: string };
+  kind: "paused" | "cursor" | "queue";
   resumeAt?: string;
   cursor?: string;
+  lapDone?: boolean;
+  task?: string;
+  ref?: string;
 }
 
 interface AdminRequest {
@@ -40,7 +44,9 @@ interface AdminRequest {
 const DISPATCHES_PER_TICK = 3;
 const SYNC_EVERY_MS = 24 * 60 * 60_000;
 const RETRY_AFTER_MS = 15 * 60_000;
-const TASKS = new Set<string>(["security", "quality"]);
+const TASKS = new Set<string>(["security", "fix", "scan", "quality", "conversation"]);
+const QUEUEABLE = new Set<string>(["security", "fix", "scan", "quality"]);
+const PUSH_SETTLE_MS = 2 * 60_000;
 
 class Hub {
   readonly env: Env;
@@ -74,8 +80,14 @@ class Hub {
       case "unregister":
         for (const repository of effect.repositories) await this.state.forgetRepository(repository);
         return;
-      case "enqueue":
-        if (await this.permitted(effect.job.repository)) await this.state.enqueue(effect.job);
+      case "enqueue": {
+        if (!(await this.permitted(effect.job.repository))) return;
+        const job = await this.resolve(effect.job);
+        if (job && (await this.state.settings(job.repository)).tasks.includes(job.task)) await this.state.enqueue(job);
+        return;
+      }
+      case "push":
+        if (await this.permitted(effect.repository)) await this.push(effect, now);
         return;
       case "delete-branch":
         if (await this.permitted(effect.repository)) await this.deleteBranch(effect);
@@ -83,11 +95,52 @@ class Hub {
     }
   }
 
+  async claudeTookPart(job: Job, number: number): Promise<boolean> {
+    const bot = `${this.env.APP_SLUG}[bot]`.toLowerCase();
+    const thread = await this.app.as<{ user: { login: string } | null }>(job.installation, "GET", `/repos/${job.repository}/issues/${number}`);
+    if (thread.user?.login.toLowerCase() === bot) return true;
+    const comments = await this.app.as<Array<{ user: { login: string } | null }>>(job.installation, "GET", `/repos/${job.repository}/issues/${number}/comments?per_page=100`);
+    return comments.some((comment) => comment.user?.login.toLowerCase() === bot);
+  }
+
+  async resolve(job: Job): Promise<Job | undefined> {
+    if (job.task === "conversation" && job.issue) return job.mentioned || (await this.claudeTookPart(job, job.issue)) ? job : undefined;
+    if (!job.pullRequest || job.ref) return job;
+    const pull = await this.app.as<{ state: string; head: { ref: string; sha: string; repo: { full_name: string } | null } }>(job.installation, "GET", `/repos/${job.repository}/pulls/${job.pullRequest}`);
+    const claudes = isClaudeBranch(pull.head.ref) && pull.head.repo?.full_name === job.repository;
+    if (job.task === "conversation") return claudes || job.mentioned || (await this.claudeTookPart(job, job.pullRequest)) ? job : undefined;
+    if ((job.task === "security" || job.task === "fix") && claudes) return pull.state === "open" ? { ...job, task: "conversation", ref: pull.head.ref, sha: pull.head.sha } : undefined;
+    return job;
+  }
+
   async register(repository: string, installation: number, defaultBranch: string | undefined, now: number): Promise<void> {
     const existing = await this.state.repository(repository);
     if (existing && existing.installation === installation && (!defaultBranch || existing.defaultBranch === defaultBranch)) return;
     const branch = defaultBranch ?? existing?.defaultBranch ?? (await this.app.as<{ default_branch: string }>(installation, "GET", `/repos/${repository}`)).default_branch;
     await this.state.saveRepository(existing ? { ...existing, installation, defaultBranch: branch } : newRecord(repository, installation, branch, now));
+    await this.refreshSettings(repository, installation, branch);
+  }
+
+  async refreshSettings(repository: string, installation: number, branch: string): Promise<HubSettings> {
+    let settings = hubSettings(new Map());
+    try {
+      const file = await this.app.as<{ content: string }>(installation, "GET", `/repos/${repository}/contents/${CONFIG_FILE}?ref=${encodeURIComponent(branch)}`);
+      settings = hubSettings(parseConfig(new TextDecoder().decode(Uint8Array.from(atob(file.content.replace(/\s+/g, "")), (character) => character.charCodeAt(0)))));
+    } catch (error) {
+      if (error instanceof ConfigError) console.log(`${repository}: ${error.message} Using the defaults until it's fixed.`);
+      else if (!(error instanceof GitHubApiError && error.status === 404)) throw error;
+    }
+    await this.state.saveSettings(repository, settings);
+    return settings;
+  }
+
+  async push(effect: Extract<Effect, { kind: "push" }>, now: number): Promise<void> {
+    const onDefaultBranch = effect.branch === effect.defaultBranch;
+    const settings = onDefaultBranch && effect.paths.includes(CONFIG_FILE) ? await this.refreshSettings(effect.repository, effect.installation, effect.branch) : await this.state.settings(effect.repository);
+    if (!settings.scanOnPush) return;
+    if (settings.scanBranches.length && !matchesAny(effect.branch, settings.scanBranches)) return;
+    if (effect.paths.length && settings.scanPaths.length && !effect.paths.some((path) => matchesAny(path, settings.scanPaths))) return;
+    await this.state.enqueue({ repository: effect.repository, installation: effect.installation, task: "scan", ref: effect.branch, sha: effect.after, before: effect.before, pullRequest: undefined, issue: undefined, sender: effect.sender, due: now + PUSH_SETTLE_MS });
   }
 
   async deleteBranch(effect: Extract<Effect, { kind: "delete-branch" }>): Promise<void> {
@@ -106,6 +159,7 @@ class Hub {
       for (const repository of await this.app.repositories(installation)) {
         if (repository.archived || isIgnored(repository.full_name, this.ignored)) continue;
         await this.register(repository.full_name, installation, repository.default_branch, now);
+        await this.refreshSettings(repository.full_name, installation, repository.default_branch).catch((error: unknown) => console.log(`Couldn't read ${repository.full_name}'s settings: ${error instanceof Error ? error.message : String(error)}`));
         seen.push(repository.full_name);
       }
     }
@@ -119,10 +173,9 @@ class Hub {
     if (now - (await this.state.lastSync()) >= SYNC_EVERY_MS) log.push(`Synced ${(await this.sync(now)).length} installed repositories.`);
     for (const record of await this.state.repositories()) {
       if (!(await this.permitted(record.repository))) continue;
-      const work = scheduledWork(record, now);
-      if (work.jobs.length === 0) continue;
+      const work = scheduledWork(record, now, await this.state.settings(record.repository));
       for (const job of work.jobs) await this.state.enqueue(job);
-      await this.state.saveRepository(work.record);
+      if (work.record !== record) await this.state.saveRepository(work.record);
     }
 
     const pause = await this.state.pause();
@@ -155,13 +208,13 @@ class Hub {
     const record = await this.state.repository(job.repository);
     const onDefaultBranch = !job.pullRequest && job.ref === record?.defaultBranch;
     let { sha, sender } = job;
-    if (!job.pullRequest && !onDefaultBranch && (!sha || !sender)) {
+    if (job.task !== "conversation" && !job.pullRequest && !onDefaultBranch && (!sha || !sender)) {
       const commit = await this.app.as<{ sha: string; author: { login: string } | null; committer: { login: string } | null }>(job.installation, "GET", `/repos/${job.repository}/commits/${encodeURIComponent(sha || job.ref)}`);
       sha ||= commit.sha;
       sender ||= commit.author?.login ?? commit.committer?.login ?? "";
     }
-    const inputs: Record<string, string> = { repository: job.repository, task: job.task, ref: job.ref, sha, "pull-request": job.pullRequest ? String(job.pullRequest) : "", sender };
-    if (job.task === "quality" && onDefaultBranch) inputs.cursor = await this.state.cursor(job.repository);
+    const inputs: Record<string, string> = { repository: job.repository, task: job.task, ref: job.ref, sha, before: job.before ?? "", "pull-request": job.pullRequest ? String(job.pullRequest) : "", issue: job.issue ? String(job.issue) : "", sender };
+    if ((job.task === "quality" || job.task === "scan") && onDefaultBranch && !job.before) inputs.cursor = await this.state.cursor(job.repository, job.task);
     await this.app.as(runnerInstallation, "POST", `/repos/${this.env.RUNNER_REPOSITORY}/actions/workflows/${encodeURIComponent(this.env.RUNNER_WORKFLOW)}/dispatches`, { ref: this.env.RUNNER_REF || "main", inputs });
   }
 
@@ -170,15 +223,30 @@ class Hub {
     if (!TASKS.has(job.task)) return text("Unknown task.", 400);
     const record = await this.state.repository(job.repository);
     if (!record || !(await this.permitted(job.repository))) return text("That repository isn't permitted.", 403);
+    if (report.kind === "queue") {
+      if (!QUEUEABLE.has(report.task ?? "")) return text("Only security sweeps, fixes, scans and quality passes can be queued.", 400);
+      if (!(await this.state.settings(job.repository)).tasks.includes(report.task as Task)) return text(`${report.task} is turned off for that repository.`, 409);
+      const ref = report.ref?.trim() || record.defaultBranch;
+      await this.state.enqueue({ repository: job.repository, installation: record.installation, task: report.task as Task, ref, sha: "", pullRequest: undefined, issue: undefined, sender: job.sender, due: now });
+      return text("Queued.", 200);
+    }
     if (report.kind === "cursor" && typeof report.cursor === "string") {
-      await this.state.saveCursor(job.repository, report.cursor);
+      await this.state.saveCursor(job.repository, job.task, report.cursor);
+      if (job.task === "scan") await this.continueLap(record, report.lapDone === true, now);
       return text("Saved.", 200);
     }
     const until = Date.parse(report.resumeAt ?? "");
     if (report.kind !== "paused" || Number.isNaN(until)) return text("Unknown report.", 400);
     await this.state.pauseUntil(until);
-    await this.state.enqueue({ repository: job.repository, installation: record.installation, task: job.task as Task, ref: job.ref, sha: job.sha, pullRequest: job.pullRequest || undefined, sender: job.sender, due: until });
+    await this.state.enqueue({ repository: job.repository, installation: record.installation, task: job.task as Task, ref: job.ref, sha: job.sha, ...(job.before ? { before: job.before } : {}), pullRequest: job.pullRequest || undefined, issue: job.issue || undefined, sender: job.sender, due: until });
     return text("Paused.", 200);
+  }
+
+  async continueLap(record: RepositoryRecord, lapDone: boolean, now: number): Promise<void> {
+    const next: Job = { repository: record.repository, installation: record.installation, task: "scan", ref: record.defaultBranch, sha: "", pullRequest: undefined, issue: undefined, sender: "", due: now };
+    if (lapDone) return this.state.finish(next);
+    const settings = await this.state.settings(record.repository);
+    if (settings.tasks.includes("scan")) await this.state.enqueue({ ...next, due: now + settings.scanPace });
   }
 
   async admin(request: AdminRequest, now: number): Promise<Response> {

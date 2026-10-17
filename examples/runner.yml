@@ -1,5 +1,5 @@
 name: Claude Autofix
-run-name: "${{ inputs.task }} · ${{ inputs.repository }}${{ inputs.pull-request && format(' #{0}', inputs.pull-request) || format(' · {0}', inputs.ref) }}"
+run-name: "${{ inputs.task }} · ${{ inputs.repository }}${{ (inputs.pull-request || inputs.issue) && format(' #{0}', inputs.pull-request || inputs.issue) || format(' · {0}', inputs.ref) }}"
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         description: Repository to work on (owner/name)
         required: true
       task:
-        description: security or quality
+        description: security, fix, scan, quality or conversation
         required: true
         default: security
       ref:
@@ -17,8 +17,14 @@ on:
       sha:
         description: Commit of ref
         default: ""
+      before:
+        description: The commit before a push (scan only what it changed)
+        default: ""
       pull-request:
         description: Pull request number
+        default: ""
+      issue:
+        description: Issue number (conversations)
         default: ""
       sender:
         description: Who made the change
@@ -31,7 +37,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ inputs.repository }}-${{ inputs.task }}-${{ inputs.pull-request || inputs.ref }}
+  group: ${{ inputs.repository }}-${{ inputs.task }}-${{ inputs.pull-request || inputs.issue || inputs.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -75,7 +81,9 @@ jobs:
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
           sha: ${{ inputs.sha }}
+          before: ${{ inputs.before }}
           pull-request: ${{ inputs.pull-request }}
+          issue: ${{ inputs.issue }}
           sender: ${{ inputs.sender }}
           cursor: ${{ inputs.cursor }}
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

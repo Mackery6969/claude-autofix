@@ -20,6 +20,7 @@ export interface ClaudeRun {
   bashCommands: string[];
   credentials: Credentials;
   executable: string;
+  readOnly?: boolean;
 }
 
 export type ClaudeOutcome =
@@ -27,6 +28,7 @@ export type ClaudeOutcome =
   | { kind: "limited"; limit: UsageLimit };
 
 const FILE_TOOLS = ["Read", "Edit", "Write", "Glob", "Grep"];
+const READ_TOOLS = ["Read", "Glob", "Grep"];
 const READ_ONLY_GIT = ["Bash(git diff:*)", "Bash(git status:*)", "Bash(git log:*)"];
 const PROTECTED_PATHS = ["Read(./.git/**)", "Edit(./.git/**)", "Write(./.git/**)"];
 const RUNNER_SECRETS = /^(INPUT_.*|GITHUB_TOKEN|ACTIONS_RUNTIME_TOKEN|ACTIONS_RUNTIME_URL|ACTIONS_ID_TOKEN_REQUEST_TOKEN|ACTIONS_ID_TOKEN_REQUEST_URL|ACTIONS_CACHE_URL|ACTIONS_RESULTS_URL|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN)$/;
@@ -67,8 +69,8 @@ export async function runClaude(run: ClaudeRun): Promise<ClaudeOutcome> {
         model: run.model,
         maxBudgetUsd: run.maxBudgetUsd,
         permissionMode: "dontAsk",
-        tools: [...FILE_TOOLS, "Bash"],
-        allowedTools: [...FILE_TOOLS, ...READ_ONLY_GIT, ...run.bashCommands.map((command) => `Bash(${command}:*)`)],
+        tools: run.readOnly ? READ_TOOLS : [...FILE_TOOLS, "Bash"],
+        allowedTools: run.readOnly ? READ_TOOLS : [...FILE_TOOLS, ...READ_ONLY_GIT, ...run.bashCommands.map((command) => `Bash(${command}:*)`)],
         disallowedTools: PROTECTED_PATHS,
         settingSources: ["project"],
         systemPrompt: { type: "preset", preset: "claude_code" },
