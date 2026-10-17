@@ -4,13 +4,14 @@ import { FILES, readSaved } from "./home.ts";
 
 const USAGE = `Usage:
   node scripts/hub.ts list
+  node scripts/hub.ts sync
   node scripts/hub.ts permit owner/repo
   node scripts/hub.ts revoke owner/repo
   node scripts/hub.ts run owner/repo [security|quality] [branch]`;
 
 async function main(): Promise<void> {
   const [action, repository, task, ref] = process.argv.slice(2);
-  if (!action || !["list", "permit", "revoke", "run"].includes(action) || (action !== "list" && !repository)) {
+  if (!action || !["list", "sync", "permit", "revoke", "run"].includes(action) || (!["list", "sync"].includes(action) && !repository)) {
     console.error(USAGE);
     process.exitCode = 1;
     return;

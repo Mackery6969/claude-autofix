@@ -9,7 +9,7 @@ import { verifySignature } from "../worker/src/signatures.ts";
 import { State, type KeyValueStore } from "../worker/src/state.ts";
 
 const now = Date.parse("2026-10-16T12:00:00Z");
-const context = { appSlug: "claude-autofix", runner: "Mackery6969/claude-autofix-runner", now };
+const context = { appSlug: "claude-autofix", ignored: ["Mackery6969/claude-autofix-runner", "Mackery6969/Claude-Autofix"], now };
 const repository = { full_name: "Mackery6969/game", default_branch: "main" };
 const payload = (overrides: WebhookPayload): WebhookPayload => ({ installation: { id: 7 }, repository, sender: { login: "Mackery6969", type: "User" }, ...overrides });
 const enqueued = (event: string, body: WebhookPayload) => effectsOf(event, body, context).flatMap((effect) => (effect.kind === "enqueue" ? [effect.job] : []));
@@ -56,12 +56,13 @@ test("closing one of Claude's pull requests deletes its branch", () => {
 
 test("the app's own events, the runner and other installations' events don't queue work", () => {
   assert.deepEqual(enqueued("issues", payload({ action: "opened", sender: { login: "Claude-Autofix[bot]", type: "Bot" } })), []);
-  assert.deepEqual(effectsOf("issues", payload({ action: "opened", repository: { full_name: context.runner, default_branch: "main" } }), context), []);
+  assert.deepEqual(effectsOf("issues", payload({ action: "opened", repository: { full_name: "Mackery6969/claude-autofix-runner", default_branch: "main" } }), context), []);
+  assert.deepEqual(effectsOf("issues", payload({ action: "opened", repository: { full_name: "mackery6969/claude-autofix", default_branch: "main" } }), context), []);
   assert.deepEqual(effectsOf("issues", { action: "opened", repository }, context), []);
 });
 
-test("installing on repositories registers them, except the runner", () => {
-  const [effect] = effectsOf("installation", { action: "created", installation: { id: 7 }, repositories: [{ full_name: "Mackery6969/game" }, { full_name: context.runner }] }, context);
+test("installing on repositories registers them, except the runner and the action's own repository", () => {
+  const [effect] = effectsOf("installation", { action: "created", installation: { id: 7 }, repositories: [{ full_name: "Mackery6969/game" }, { full_name: "Mackery6969/claude-autofix-runner" }, { full_name: "Mackery6969/Claude-Autofix" }] }, context);
   assert.equal(effect?.kind, "register");
   assert.deepEqual(effect?.kind === "register" ? effect.repositories.map((entry) => entry.repository) : [], ["Mackery6969/game"]);
 });

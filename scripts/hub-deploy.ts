@@ -16,6 +16,7 @@ export interface HubSettings {
   slug: string;
   runner: string;
   owners: string[];
+  ignored: string[];
 }
 
 export function run(command: string, args: string[], input?: string): { ok: boolean; stdout: string; stderr: string } {
@@ -30,12 +31,23 @@ export function must(command: string, args: string[], failure: string, input?: s
   return result.stdout;
 }
 
+const TOKEN_HELP = `The Cloudflare API token can't manage Workers on this account. Edit it under My Profile → API Tokens (or make one from the "Edit Cloudflare Workers" template) with:
+  Account → Workers Scripts → Edit, Workers KV Storage → Edit, Account Settings → Read
+  User → Memberships → Read, User Details → Read
+  Account Resources → Include → the account in CLOUDFLARE_ACCOUNT_ID
+then update the CLOUDFLARE_API_TOKEN secret and run Deploy hub again.`;
+
 function wrangler(args: string[], failure: string): string {
-  return must("npx", [...WRANGLER, ...args, "--config", WRANGLER_CONFIG], failure);
+  const result = run("npx", [...WRANGLER, ...args, "--config", WRANGLER_CONFIG]);
+  if (result.ok) return result.stdout;
+  const output = `${result.stderr}\n${result.stdout}`.trim();
+  if (/No access to the specified resource|Authentication error|\[code: 10000\]/i.test(output)) throw new SetupError(`${failure}\n${TOKEN_HELP}\n\n${output}`);
+  if (/workers\.dev subdomain/i.test(output)) throw new SetupError(`${failure}\nThis Cloudflare account has no workers.dev subdomain yet. Open Workers & Pages in the Cloudflare dashboard once to pick one, then run Deploy hub again.\n\n${output}`);
+  throw new SetupError(`${failure}\n${output}`);
 }
 
 export function deployWorker(settings: HubSettings): string {
-  const vars = { APP_CLIENT_ID: settings.clientId, APP_SLUG: settings.slug, RUNNER_REPOSITORY: settings.runner, PERMITTED_OWNERS: settings.owners.join(",") };
+  const vars = { APP_CLIENT_ID: settings.clientId, APP_SLUG: settings.slug, RUNNER_REPOSITORY: settings.runner, PERMITTED_OWNERS: settings.owners.join(","), IGNORED_REPOSITORIES: settings.ignored.join(",") };
   const output = wrangler(["deploy", ...Object.entries(vars).flatMap(([name, value]) => ["--var", `${name}:${value}`])], "Couldn't deploy the hub to Cloudflare.");
   const url = /https:\/\/[\w.-]+\.workers\.dev/.exec(output)?.[0];
   if (!url) throw new SetupError(`Deployed, but couldn't find the hub's URL in Wrangler's output:\n${output}`);

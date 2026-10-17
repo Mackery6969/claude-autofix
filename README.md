@@ -111,6 +111,7 @@ Instead of adding workflows to every repository, you can run Claude Autofix the 
 node scripts/hub.ts permit someone/their-project   # let the hub work on a repository you don't own
 node scripts/hub.ts revoke someone/their-project   # stop, and drop anything queued for it
 node scripts/hub.ts list                           # repositories seen, which are permitted, the queue and any pause
+node scripts/hub.ts sync                           # pick up every repository the app is installed on (also runs daily)
 node scripts/hub.ts run owner/repo quality         # queue a pass now (optionally on a branch)
 ```
 

@@ -105,6 +105,14 @@ export class State {
     return this.#listed<string>("permit:");
   }
 
+  async lastSync(): Promise<number> {
+    return Number((await this.#store.get("synced")) ?? 0);
+  }
+
+  async synced(now: number): Promise<void> {
+    await this.#store.put("synced", String(now));
+  }
+
   async cursor(repository: string): Promise<string> {
     return (await this.#store.get(`cursor:${repository}`)) ?? "";
   }

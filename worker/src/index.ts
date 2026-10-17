@@ -1,5 +1,5 @@
 import { encodeRef, GitHubApiError, GitHubApp } from "./github.ts";
-import { effectsOf, type Effect, type Job, type Task, type WebhookPayload } from "./routing.ts";
+import { effectsOf, isIgnored, type Effect, type Job, type Task, type WebhookPayload } from "./routing.ts";
 import { dueJobs, newRecord, scheduledWork } from "./schedule.ts";
 import { GITHUB_SIGNATURE_HEADER, REPORT_SIGNATURE_HEADER, verifySignature } from "./signatures.ts";
 import { State, type KeyValueStore } from "./state.ts";
@@ -12,6 +12,7 @@ export interface Env {
   RUNNER_WORKFLOW: string;
   RUNNER_REF: string;
   PERMITTED_OWNERS: string;
+  IGNORED_REPOSITORIES: string;
   GITHUB_APP_PRIVATE_KEY: string;
   GITHUB_WEBHOOK_SECRET: string;
   HUB_SECRET: string;
@@ -30,13 +31,14 @@ interface HubReport {
 }
 
 interface AdminRequest {
-  action: "permit" | "revoke" | "list" | "run";
+  action: "permit" | "revoke" | "list" | "run" | "sync";
   repository?: string;
   task?: Task;
   ref?: string;
 }
 
 const DISPATCHES_PER_TICK = 3;
+const SYNC_EVERY_MS = 24 * 60 * 60_000;
 const RETRY_AFTER_MS = 15 * 60_000;
 const TASKS = new Set<string>(["security", "quality"]);
 
@@ -55,7 +57,12 @@ class Hub {
     return (this.env.PERMITTED_OWNERS ?? "").split(/[\s,]+/).filter(Boolean);
   }
 
-  permitted(repository: string): Promise<boolean> {
+  get ignored(): string[] {
+    return [this.env.RUNNER_REPOSITORY, ...(this.env.IGNORED_REPOSITORIES ?? "").split(/[\s,]+/)].filter(Boolean);
+  }
+
+  async permitted(repository: string): Promise<boolean> {
+    if (isIgnored(repository, this.ignored)) return false;
     return this.state.permitted(repository, this.owners);
   }
 
@@ -93,8 +100,23 @@ class Hub {
     }
   }
 
+  async sync(now: number): Promise<string[]> {
+    const seen: string[] = [];
+    for (const installation of await this.app.installations()) {
+      for (const repository of await this.app.repositories(installation)) {
+        if (repository.archived || isIgnored(repository.full_name, this.ignored)) continue;
+        await this.register(repository.full_name, installation, repository.default_branch, now);
+        seen.push(repository.full_name);
+      }
+    }
+    for (const record of await this.state.repositories()) if (!seen.includes(record.repository)) await this.state.forgetRepository(record.repository);
+    await this.state.synced(now);
+    return seen;
+  }
+
   async tick(now: number): Promise<string[]> {
     const log: string[] = [];
+    if (now - (await this.state.lastSync()) >= SYNC_EVERY_MS) log.push(`Synced ${(await this.sync(now)).length} installed repositories.`);
     for (const record of await this.state.repositories()) {
       if (!(await this.permitted(record.repository))) continue;
       const work = scheduledWork(record, now);
@@ -167,6 +189,11 @@ class Hub {
       const pause = await this.state.pause();
       return json({ owners: this.owners, permits: await this.state.permits(), repositories: rows, queued: (await this.state.jobs()).map(({ repository: name, task, ref, pullRequest, due }) => ({ repository: name, task, ref, pullRequest, due: new Date(due).toISOString() })), pausedUntil: pause && pause.until > now ? new Date(pause.until).toISOString() : null });
     }
+    if (request.action === "sync") {
+      const seen = await this.sync(now);
+      const permitted = await Promise.all(seen.map(async (name) => `${name}${(await this.permitted(name)) ? "" : " (not permitted)"}`));
+      return text(`The app is installed on ${seen.length} repositories:\n${permitted.join("\n")}`, 200);
+    }
     if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) return text("Give a repository as owner/name.", 400);
     if (request.action === "permit") {
       await this.state.permit(repository);
@@ -208,7 +235,7 @@ export default {
     const now = Date.now();
     if (pathname === "/webhook") {
       if (!(await verifySignature(env.GITHUB_WEBHOOK_SECRET, body, request.headers.get(GITHUB_SIGNATURE_HEADER)))) return text("Bad signature.", 401);
-      const effects = effectsOf(request.headers.get("X-GitHub-Event") ?? "", JSON.parse(body) as WebhookPayload, { appSlug: env.APP_SLUG, runner: env.RUNNER_REPOSITORY, now });
+      const effects = effectsOf(request.headers.get("X-GitHub-Event") ?? "", JSON.parse(body) as WebhookPayload, { appSlug: env.APP_SLUG, ignored: new Hub(env).ignored, now });
       for (const effect of effects) await hub.apply(effect, now);
       return text(`Handled ${effects.length} effect(s).`, 200);
     }

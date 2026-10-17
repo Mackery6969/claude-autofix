@@ -84,6 +84,25 @@ export class GitHubApp {
     return installation.id;
   }
 
+  async installations(): Promise<number[]> {
+    const jwt = await appJwt(this.#credentials);
+    const ids: number[] = [];
+    for (let page = 1; ; page++) {
+      const batch = await request<Array<{ id: number }>>(jwt, "GET", `/app/installations?per_page=100&page=${page}`);
+      ids.push(...batch.map((installation) => installation.id));
+      if (batch.length < 100) return ids;
+    }
+  }
+
+  async repositories(installation: number): Promise<Array<{ full_name: string; default_branch: string; archived: boolean }>> {
+    const repositories: Array<{ full_name: string; default_branch: string; archived: boolean }> = [];
+    for (let page = 1; ; page++) {
+      const batch = await this.as<{ repositories: Array<{ full_name: string; default_branch: string; archived: boolean }> }>(installation, "GET", `/installation/repositories?per_page=100&page=${page}`);
+      repositories.push(...batch.repositories);
+      if (batch.repositories.length < 100) return repositories;
+    }
+  }
+
   async token(installation: number): Promise<string> {
     const cached = this.#tokens.get(installation);
     if (cached && cached.expires > Date.now() + 60_000) return cached.token;

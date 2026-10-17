@@ -37,7 +37,7 @@ export interface WebhookPayload {
 
 export interface RoutingContext {
   appSlug: string;
-  runner: string;
+  ignored: string[];
   now: number;
 }
 
@@ -75,7 +75,7 @@ export function effectsOf(event: string, payload: WebhookPayload, context: Routi
   }
 
   const repository = payload.repository;
-  if (!repository || repository.full_name === context.runner || repository.archived) return [];
+  if (!repository || isIgnored(repository.full_name, context.ignored) || repository.archived) return [];
   const known: Effect = { kind: "register", installation, repositories: [{ repository: repository.full_name, defaultBranch: repository.default_branch }] };
   const bySelf = payload.sender?.login.toLowerCase() === `${context.appSlug}[bot]`.toLowerCase();
   const job = (task: Task, ref: string, settle: number, extra: Partial<Job> = {}): Effect => ({
@@ -114,8 +114,12 @@ function register(installation: number, repositories: Array<{ full_name: string 
   return {
     kind: "register",
     installation,
-    repositories: repositories.filter((repository) => repository.full_name !== context.runner).map((repository) => ({ repository: repository.full_name, defaultBranch: undefined })),
+    repositories: repositories.filter((repository) => !isIgnored(repository.full_name, context.ignored)).map((repository) => ({ repository: repository.full_name, defaultBranch: undefined })),
   };
+}
+
+export function isIgnored(repository: string, ignored: string[]): boolean {
+  return ignored.some((name) => name.toLowerCase() === repository.toLowerCase());
 }
 
 export function mergeJobs(existing: Job | undefined, incoming: Job): Job {

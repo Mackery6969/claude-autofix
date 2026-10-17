@@ -10,7 +10,7 @@ try {
   const runner = setting("CLAUDE_AUTOFIX_RUNNER");
   const hubSecret = setting("CLAUDE_AUTOFIX_HUB_SECRET");
   const appKey = setting("CLAUDE_APP_PRIVATE_KEY");
-  const url = deployWorker({ clientId: setting("CLAUDE_APP_CLIENT_ID"), slug: setting("CLAUDE_APP_SLUG"), runner, owners: setting("CLAUDE_AUTOFIX_OWNERS").split(",") });
+  const url = deployWorker({ clientId: setting("CLAUDE_APP_CLIENT_ID"), slug: setting("CLAUDE_APP_SLUG"), runner, owners: setting("CLAUDE_AUTOFIX_OWNERS").split(","), ignored: [ACTION_REPOSITORY] });
   console.log(`Deployed the hub at ${url}`);
   putWorkerSecrets({ GITHUB_APP_PRIVATE_KEY: appKey, GITHUB_WEBHOOK_SECRET: setting("CLAUDE_AUTOFIX_WEBHOOK_SECRET"), HUB_SECRET: hubSecret, ADMIN_SECRET: setting("CLAUDE_AUTOFIX_ADMIN_SECRET") });
   console.log("Set the hub's secrets");

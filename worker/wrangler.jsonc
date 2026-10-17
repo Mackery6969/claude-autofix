@@ -11,6 +11,7 @@
     "RUNNER_REPOSITORY": "",
     "RUNNER_WORKFLOW": "claude-autofix.yml",
     "RUNNER_REF": "main",
-    "PERMITTED_OWNERS": ""
+    "PERMITTED_OWNERS": "",
+    "IGNORED_REPOSITORIES": ""
   }
 }
