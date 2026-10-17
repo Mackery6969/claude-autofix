@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { log, summary, warn } from "../base/actions.ts";
 import { askClaudeForText, installClaudeCode } from "../base/claude.ts";
 import { pauseRun } from "../base/pause.ts";
-import { isInside, type PathRules } from "../base/paths.ts";
+import type { PathRules } from "../base/paths.ts";
 import { alertsRef, changedLines, changeSetName, filesChanged, touchesChangedLines, type ChangeSet, type PullRequestMode } from "../base/pulls.ts";
 import { ClaudeTask, commentMarker, commitMessage, DESCRIPTION_FILE, type ClaudeReport, type Delivery, type Helpers, type PullRequestText, type TaskSettings } from "../base/task.ts";
 import { ALERTS_FILE, alertKey, dismissAlerts, dismissalInstructions, dismissalsSection, DISMISSALS_FILE, fromScanners, readDismissals, writeAlertsFile, type Alert, type Dismissal, type ScannerFilter } from "./alerts.ts";
@@ -46,15 +46,12 @@ interface SecurityPlan {
   issues: IssueWork[];
   dependencies: DependencyAlert[];
   applied: Pin[];
-  suggested: Pin[];
-  manual: Pin[];
   handledBefore: string[];
   dismissed: Dismissal[];
   outcomes: IssueOutcome[];
   verdicts: DependencyVerdict[];
 }
 
-const WORKFLOWS = ".github/workflows";
 const GROUPING_BUDGET_USD = 0.5;
 
 export class SecurityTask extends ClaudeTask<SecurityPlan> {
@@ -144,7 +141,7 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
       executable: installClaudeCode(join(tempDirectory, "claude-code")),
     });
     if (outcome.kind === "limited") {
-      await pauseRun(outcome.limit, this.pauseContext);
+      await pauseRun(outcome.limit, this.settings.hub);
       return undefined;
     }
     const answer = outcome.result?.subtype === "success" ? outcome.result.result : "";
@@ -178,7 +175,7 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
   }
 
   private planFor(changes: ChangeSet | undefined, group: Group, handledBefore: string[]): SecurityPlan {
-    return { changes, group, alerts: [], issues: [], dependencies: [], applied: [], suggested: [], manual: [], handledBefore, dismissed: [], outcomes: [], verdicts: [] };
+    return { changes, group, alerts: [], issues: [], dependencies: [], applied: [], handledBefore, dismissed: [], outcomes: [], verdicts: [] };
   }
 
   protected describe(plan: SecurityPlan): string {
@@ -187,16 +184,11 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
 
   protected async begin(plan: SecurityPlan): Promise<void> {
     const { github, workspace } = this.settings;
-    const pins = await resolvePins(plan.group.alerts, workspace, (repository, ref) => github.commitSha(repository, ref));
-    const locked = this.canEditWorkflows ? [] : pins.filter((pin) => isInside(pin.path, WORKFLOWS));
-    plan.applied = pins.filter((pin) => !locked.includes(pin));
-    plan.suggested = plan.changes?.pullRequest ? locked : [];
-    plan.manual = plan.changes?.pullRequest ? [] : locked;
+    plan.applied = await resolvePins(plan.group.alerts, workspace, (repository, ref) => github.commitSha(repository, ref));
     applyPins(plan.applied, workspace);
-    plan.alerts = plan.group.alerts.filter((alert) => !pins.some((pin) => pin.alert === alert));
+    plan.alerts = plan.group.alerts.filter((alert) => !plan.applied.some((pin) => pin.alert === alert));
     plan.issues = plan.group.issues;
     plan.dependencies = plan.group.dependencies;
-    if (plan.changes?.pullRequest) await this.suggestPins(plan.changes.pullRequest, plan.changes.sha, plan.suggested);
     if (plan.alerts.length) writeAlertsFile(workspace, plan.alerts);
     if (plan.dependencies.length) writeDependabotFile(workspace, plan.dependencies);
     if (plan.issues.length) writeIssuesFile(workspace, plan.issues);
@@ -216,15 +208,9 @@ export class SecurityTask extends ClaudeTask<SecurityPlan> {
   protected async delivered(plan: SecurityPlan, pullUrl: string | undefined): Promise<void> {
     if (plan.outcomes.length) await commentOnIssues(this.settings.github, plan.outcomes, pullUrl);
     await this.escalate(plan, pullUrl);
-    if (pullUrl || (!plan.suggested.length && !plan.manual.length)) return;
-    if (plan.changes?.pullRequest) await this.settings.github.upsertComment(plan.changes.pullRequest, commentMarker(this.name), `### Pin GitHub Actions to commit SHAs\n\n${this.pinsSection(plan)}\n\n${this.marker(plan)}`);
-    else summary(this.pinsSection(plan));
   }
 
   protected prompt(plan: SecurityPlan, helpers: Helpers): string {
-    const workflowRule = this.canEditWorkflows
-      ? "Files under .github/workflows/ may be edited if an alert is there."
-      : 'Do not edit files under .github/workflows/: this run cannot push workflow changes. List alerts there under "Needs a human".';
     const scope = plan.changes ? `on lines that ${changeSetName(plan.changes)} adds or changes compared with \`${plan.changes.base}\`` : `grouped as "${plan.group.label}"`;
     const sections: string[] = [];
     if (plan.alerts.length) {
@@ -235,7 +221,7 @@ How to handle the alerts, following the security policy in CLAUDE.md if the repo
 - Real flaw: fix it with the standard, well-tested mechanism for the language or library (parameterized queries, the framework's escaping API, constant-time comparison, argument-list subprocess calls, and so on). Do not write a custom string filter.
 - Vendored, generated or third-party code: do not patch it. Dismiss the alert as "won't fix" if it truly doesn't apply, or list it under "Needs a human". When you dismiss alerts from GML Code Scanner for a whole folder that it shouldn't scan, also add that folder to \`.gmlscanignore\` (\`.gitignore\` syntax, patterns relative to the file's folder; next to \`.gmlscan.json\` if there is one, otherwise in the scanned folder), so later scans skip it. Keep any lines already there.
 - Never write a commit SHA, version number, checksum or URL you can't confirm from files in this repository; you have no network access to look them up. If a fix needs one, list the alert under "Needs a human" and say what to look up.
-- ${workflowRule}`);
+- Files under .github/workflows/ may be edited if an alert is there.`);
     }
     if (plan.dependencies.length) sections.push(dependabotInstructions());
     if (plan.issues.length) sections.push(issueInstructions());
@@ -276,7 +262,7 @@ When you are done:
     const description = [report.description, this.pinsSection(plan), dismissalsSection(plan.dismissed, plan.alerts), dependenciesSection(plan.dependencies, plan.verdicts), issuesSection(plan.outcomes, plan.issues)].filter(Boolean).join("\n\n");
     const scope = plan.changes ? `This covers the ${count(items, "code scanning alert")} on lines ${changeSetName(plan.changes)} changes.` : `This covers ${count(items, "related item")} (${plan.group.label}). Other groups get their own pull requests.`;
     const ignoring = plan.changes ? "" : " Closing this pull request without merging it marks what it covers as handled.";
-    const pinned = plan.applied.length + plan.suggested.length;
+    const pinned = plan.applied.length;
     const fallback = plan.alerts.length === 0 && plan.dependencies.length === 0 && plan.issues.length === 0 && pinned > 0 ? `Pin ${pinned} GitHub Action${pinned === 1 ? "" : "s"} to commit SHAs` : capitalize(plan.group.label);
     const title = report.title ?? fallback;
     return {
@@ -313,24 +299,9 @@ When you are done:
     const pinList = (pins: Pin[]) => pins.map((pin) => `- \`${pin.path}:${pin.line}\` ${pin.action}@${pin.ref} → \`${pin.sha.slice(0, 12)}\``).join("\n");
     const sections: string[] = [];
     if (plan.applied.length) sections.push(`Pinned to the commit each tag points to today:\n\n${pinList(plan.applied)}`);
-    if (plan.suggested.length) sections.push(`Suggested as changes on this pull request, because workflow files can't be pushed without a token that may change them:\n\n${pinList(plan.suggested)}`);
-    if (plan.manual.length) sections.push(`Pin these by hand, because workflow files can't be pushed without a token that may change them:\n\n${plan.manual.map((pin) => `- \`${pin.path}:${pin.line}\`: \`${pin.after.trim()}\``).join("\n")}`);
     return sections.join("\n\n");
   }
 
-  private async suggestPins(pullRequest: number, sha: string, pins: Pin[]): Promise<void> {
-    if (pins.length === 0) return;
-    try {
-      await this.settings.github.suggestChanges(
-        pullRequest,
-        sha,
-        "These actions are pinned to the commit their tag points to today. Workflow files can't be pushed with GITHUB_TOKEN, so commit the suggestions here, or use a GitHub App token to have them pushed.",
-        pins.map((pin) => ({ path: pin.path, line: pin.line, note: `Pin \`${pin.action}@${pin.ref}\` to \`${pin.sha}\`.`, replacement: pin.after })),
-      );
-    } catch (error) {
-      warn(`Couldn't post the suggested pins: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
 }
 
 function count(amount: number, noun: string): string {

@@ -64,8 +64,15 @@ export function putWorkerSecrets(secrets: Record<string, string>): void {
   }
 }
 
+export function releasedActionVersion(workflow: string): string | undefined {
+  const version = new RegExp(`uses: ${ACTION_REPOSITORY}@(\\S+)`, "i").exec(workflow)?.[1];
+  if (!version) return undefined;
+  return run("gh", ["api", `repos/${ACTION_REPOSITORY}/git/ref/tags/${version}`, "--silent"]).ok ? version : undefined;
+}
+
 export function writeRunnerWorkflow(runner: string): boolean {
   const content = readFileSync(RUNNER_TEMPLATE, "utf8");
+  if (!releasedActionVersion(content)) throw new SetupError(`The runner workflow uses a version of ${ACTION_REPOSITORY} that isn't released yet, so ${runner} keeps its current workflow. The release deploys it.`);
   const existing = run("gh", ["api", `repos/${runner}/contents/${RUNNER_WORKFLOW}`, "--jq", ".sha + \" \" + .content"]);
   const [sha, ...encoded] = existing.ok ? existing.stdout.split(" ") : [];
   if (sha && Buffer.from(encoded.join("").replace(/\\n|\s/g, ""), "base64").toString("utf8") === content) return false;

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cursorMessage, parseCursor } from "../src/tasks/quality.ts";
 import { isSourcePath, nextBatch, SOURCE_EXTENSIONS, takeUpTo, type SourceFile } from "../src/tasks/sources.ts";
 
 const scope = { areas: [], exclude: [], extensions: SOURCE_EXTENSIONS };
@@ -39,9 +38,4 @@ test("each pass continues after the last file of the previous one and wraps at t
 test("a cursor pointing at a deleted file resumes at the next file after it", () => {
   const all = files(["a.ts", 10], ["c.ts", 10]);
   assert.deepEqual(nextBatch(all, "b.ts", 5).files.map((f) => f.path), ["c.ts"]);
-});
-
-test("cursor markers round-trip, including paths with spaces", () => {
-  assert.equal(parseCursor(cursorMessage("Gamemaker Authentication System/site/src/auth.ts")), "Gamemaker Authentication System/site/src/auth.ts");
-  assert.equal(parseCursor("unrelated"), "");
 });

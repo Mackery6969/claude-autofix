@@ -12,10 +12,11 @@
 
 ## Layout
 - `src/base/` is the shared base: `ClaudeTask` runs the pipeline (plan, run Claude, pause on usage limits, enforce paths, verify, open the pull request).
-- `src/tasks/` holds the tasks that extend it (`security`, `quality`) and the `resume` poller.
+- `src/tasks/` holds the tasks that extend it (`security`, `quality`).
+- `worker/` is the hub, a Cloudflare Worker: it receives the GitHub App's webhooks, queues and schedules work, and dispatches it to the runner repository, which runs the action from `examples/runner.yml`. The action only runs that way.
 - `dist/` is never committed on branches; the release workflow builds it into each tag.
 
 ## Checks
 Run `npm run check` (typecheck, tests, build) before committing.
 
-The repository runs itself: `.github/workflows/security.yml` and `code-quality.yml` build `dist/` and use `./`, so its own code scanning alerts, issues and weekly passes go through the code being changed, and `claude-resume.yml` resumes its own paused runs. If the action breaks, its own runs fail first.
+The hub works on this repository like any other, using the released action and `.github/claude-autofix.yml`. Pushing changes to `worker/`, the runner workflow or the deploy scripts redeploys the hub (`.github/workflows/hub.yml`), so run `npm run check` before pushing them.

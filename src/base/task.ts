@@ -6,9 +6,9 @@ import { hasCredentials, installClaudeCode, runClaude, type Credentials } from "
 import { changedFiles, checkoutBranchAt, commitAll, currentCommit, discardUncommitted, forcePush, git, lastCommitIsBy, pushIfUnchanged, resetTo, restore, type Identity, type PushOptions } from "./git.ts";
 import { GitHubError, type GitHub, type PullRequest } from "./github.ts";
 import type { Hub } from "./hub.ts";
-import { pauseRun, type PauseContext } from "./pause.ts";
+import { pauseRun } from "./pause.ts";
 import { isOffLimits, type PathRules } from "./paths.ts";
-import { whyNotEligible, type ChangeSet, type PullRequestEvent, type PullRequestMode } from "./pulls.ts";
+import { whyNotEligible, type ChangeSet, type PullRequestMode } from "./pulls.ts";
 import { runHelperScript, writeHelperScript, type HelperScript } from "./scripts.ts";
 
 export interface TaskSettings {
@@ -16,28 +16,20 @@ export interface TaskSettings {
   tempDirectory: string;
   github: GitHub;
   githubToken: string;
-  prToken: string;
   credentials: Credentials;
   serverUrl: string;
   runId: string;
   runRepository: string;
-  eventName: string;
-  eventAction: string;
-  pullRequest: PullRequestEvent | undefined;
   changes: ChangeSet | undefined;
-  refName: string;
-  triggerBranch: string;
+  ref: string;
   model: string;
   maxBudgetUsd: number;
   verifyCommand: string;
   branchPrefix: string;
   labels: string[];
   force: boolean;
-  resumeWorkflow: string;
   author: Identity;
-  canPushWorkflows: boolean;
   timeBudgetMinutes: number;
-  hosted: boolean;
   hub: Hub | undefined;
 }
 
@@ -64,7 +56,6 @@ export interface Helpers {
 export type Delivery = { kind: "new-pull-request" } | { kind: "pull-request"; branch: string; base: string } | { kind: "push"; branch: string; pullRequest: number | undefined };
 
 export const DESCRIPTION_FILE = ".claude-pr.md";
-const WORKFLOWS = ".github/workflows";
 const TITLE_LIMIT = 72;
 const SLUG_LIMIT = 50;
 const COMMIT_BODY_LIMIT = 4000;
@@ -138,14 +129,10 @@ export abstract class ClaudeTask<Plan> {
     return true;
   }
 
-  protected get canEditWorkflows(): boolean {
-    return this.settings.canPushWorkflows;
-  }
-
   protected get pushOptions(): Omit<PushOptions, "branch"> {
     return {
       cwd: this.settings.workspace,
-      token: this.settings.prToken || this.settings.githubToken,
+      token: this.settings.githubToken,
       serverUrl: this.settings.serverUrl,
       repository: this.settings.github.repository,
     };
@@ -161,8 +148,8 @@ export abstract class ClaudeTask<Plan> {
   }
 
   protected async onDefaultBranch(): Promise<boolean> {
-    if (this.settings.changes || this.settings.eventName.startsWith("pull_request")) return false;
-    return this.settings.triggerBranch === (await this.defaultBranch());
+    if (this.settings.changes) return false;
+    return this.settings.ref === (await this.defaultBranch());
   }
 
   protected whyChangesSkipped(changes: ChangeSet, authors: string[]): string | undefined {
@@ -204,7 +191,6 @@ export abstract class ClaudeTask<Plan> {
   }
 
   async run(): Promise<void> {
-    if (this.settings.eventName.startsWith("pull_request") && this.settings.eventAction === "closed") return this.deleteClosedPullRequestBranch();
     await this.deleteClosedBranches();
     const planned = await this.plan();
     const plans = planned === undefined ? [] : Array.isArray(planned) ? planned : [planned];
@@ -288,23 +274,7 @@ export abstract class ClaudeTask<Plan> {
     return candidate;
   }
 
-  private isOwnBranch(name: string): boolean {
-    return name.startsWith(`${this.settings.branchPrefix}/`);
-  }
-
-  private async deleteClosedPullRequestBranch(): Promise<void> {
-    const pull = this.settings.pullRequest;
-    const { github } = this.settings;
-    if (!pull || pull.head.repo?.full_name !== github.repository || !this.isOwnBranch(pull.head.ref)) return;
-    const branch = (await github.branchesStartingWith(pull.head.ref)).find((candidate) => candidate.name === pull.head.ref);
-    if (!branch) return log(`${pull.head.ref} is already gone.`);
-    if (branch.sha !== pull.head.sha) return log(`${pull.head.ref} has commits the pull request doesn't, so it's kept.`);
-    await github.deleteBranch(branch.name);
-    log(`Deleted ${branch.name}: its pull request (#${pull.number}) was ${pull.merged ? "merged" : "closed"}.`);
-  }
-
   private async deleteClosedBranches(): Promise<void> {
-    if (this.settings.eventName.startsWith("pull_request")) return;
     const { github } = this.settings;
     try {
       for (const candidate of await github.branchesStartingWith(`${this.settings.branchPrefix}/`)) {
@@ -329,7 +299,7 @@ export abstract class ClaudeTask<Plan> {
       executable: installClaudeCode(join(this.settings.tempDirectory, "claude-code")),
     });
     if (outcome.kind === "limited") {
-      await pauseRun(outcome.limit, this.pauseContext);
+      await pauseRun(outcome.limit, this.settings.hub);
       return undefined;
     }
     if (!outcome.result) throw new ActionFailure(`Claude stopped unexpectedly: ${outcome.failure ?? "no result"}`);
@@ -357,11 +327,6 @@ export abstract class ClaudeTask<Plan> {
     return { title: undefined, description: "", stoppedEarly: undefined, errors: "", costUsd: 0, runUrl: this.runUrl };
   }
 
-  protected get pauseContext(): PauseContext {
-    const { github, runId, resumeWorkflow, hosted, hub } = this.settings;
-    return { github, runId, resumeWorkflow, hosted, hub };
-  }
-
   protected get runUrl(): string {
     return `${this.settings.serverUrl}/${this.settings.runRepository}/actions/runs/${this.settings.runId}`;
   }
@@ -372,11 +337,9 @@ export abstract class ClaudeTask<Plan> {
 
   private dropOffLimitsChanges(plan: Plan): void {
     const rules = this.pathRules(plan);
-    const excluded = this.canEditWorkflows ? rules.excluded : [...rules.excluded, WORKFLOWS];
     for (const file of changedFiles(this.settings.workspace)) {
-      if (!isOffLimits(file.path, { ...rules, excluded })) continue;
-      const reason = file.path.startsWith(`${WORKFLOWS}/`) && !this.canEditWorkflows ? "workflow files need a token with workflows permission (a GitHub App or pr-token)" : "it's outside what this run may change";
-      warn(`Dropped Claude's change to ${file.path}: ${reason}.`);
+      if (!isOffLimits(file.path, rules)) continue;
+      warn(`Dropped Claude's change to ${file.path}: it's outside what this run may change.`);
       restore(file, this.settings.workspace);
     }
   }

@@ -1,15 +1,13 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { log, notice, setOutput, warn } from "../base/actions.ts";
+import { log, setOutput, warn } from "../base/actions.ts";
 import { reportToHub } from "../base/hub.ts";
 import { normalizePath, type PathRules } from "../base/paths.ts";
 import { changeSetName, filesChanged, type ChangeSet, type PullRequestMode } from "../base/pulls.ts";
 import { ClaudeTask, commitMessage, type ClaudeReport, type Delivery, type Helpers, type PullRequestText, type TaskSettings } from "../base/task.ts";
 import { isSourcePath, listSourceFiles, nextBatch, readSourceFile, takeUpTo, type SourceFile, type SourceScope } from "./sources.ts";
 
-export const CURSOR_TITLE = "code-quality-cursor";
 const DIFF_FILE = ".claude-pr-changes.diff";
-const RUNS_CHECKED_FOR_CURSOR = 10;
 
 export interface QualityOptions {
   areas: string[];
@@ -26,14 +24,6 @@ type QualityPlan =
   | { mode: "batch"; files: SourceFile[]; cursor: string; saveCursor: boolean; wrapped: boolean }
   | { mode: "changes"; files: SourceFile[]; skipped: SourceFile[]; changes: ChangeSet };
 
-export function cursorMessage(path: string): string {
-  return `after=${path}`;
-}
-
-export function parseCursor(message: string): string {
-  return message.startsWith("after=") ? message.slice("after=".length).trim() : "";
-}
-
 export class QualityTask extends ClaudeTask<QualityPlan> {
   protected readonly name = "quality";
   readonly #options: QualityOptions;
@@ -45,9 +35,8 @@ export class QualityTask extends ClaudeTask<QualityPlan> {
 
   protected async plan(): Promise<QualityPlan | undefined> {
     if (this.settings.changes) return this.planChanges(this.settings.changes);
-    if (this.settings.eventName.startsWith("pull_request")) return undefined;
     if (!(await this.onDefaultBranch())) {
-      log("Code-quality passes run on the default branch or on pull requests.");
+      log("Code-quality passes run on the default branch, on branches and on pull requests.");
       return undefined;
     }
     if (!this.settings.force) {
@@ -64,7 +53,7 @@ export class QualityTask extends ClaudeTask<QualityPlan> {
       log("No source files to look at. Check areas, exclude and extensions.");
       return undefined;
     }
-    const cursor = area ? "" : await this.lastCursor();
+    const cursor = area ? "" : (this.settings.hub?.cursor ?? "");
     const batch = nextBatch(files, cursor, this.#options.batchLines);
     setOutput("files", batch.files.length);
     log(`This pass covers ${batch.files.length} of ${files.length} source files${batch.wrapped ? ", starting over from the top" : ""}.`);
@@ -97,7 +86,6 @@ export class QualityTask extends ClaudeTask<QualityPlan> {
       plan.mode === "batch"
         ? `This is the repository's scheduled code-quality pass. This run covers these ${plan.files.length} files:\n\n${fileList}`
         : `${this.changesDescription(plan.changes)} changes the files below compared with \`${plan.changes.base}\`. Make a code-quality pass over the code it adds or changes; its diff is in \`${DIFF_FILE}\`. Leave untouched code in these files alone unless the change needs it.\n\n${fileList}`;
-    const workflowRule = this.canEditWorkflows ? "" : "\n- Do not edit files under .github/workflows/: this run cannot push workflow changes.";
     return `${focus}
 
 Read every file listed above. You may read any other file for context, but only change the listed ones.
@@ -116,7 +104,7 @@ Rules for this run:
 - Pick the highest-value improvements and keep the change easy to review.
 - Match each file's existing style and naming.
 - Where you can't build or run the code (for example it needs Windows, a proprietary toolchain, or a game engine), still make small, mechanical improvements you're confident keep behaviour identical. Skip a file only when nothing in it is worth changing.
-- Do not start subagents.${workflowRule}
+- Do not start subagents.
 - If nothing is worth changing, change nothing.
 ${this.#options.instructions ? `\n${this.#options.instructions}\n` : ""}
 ${this.toolRules(helpers)}
@@ -135,10 +123,10 @@ When you are done:
   }
 
   protected async finished(plan: QualityPlan): Promise<void> {
-    if (plan.mode !== "batch" || !plan.saveCursor) return;
-    notice(cursorMessage(plan.cursor), CURSOR_TITLE);
     const { hub } = this.settings;
-    if (hub) await reportToHub(hub, { kind: "cursor", cursor: plan.cursor }).catch((error: unknown) => warn(`Couldn't tell the hub where this pass stopped, so the next pass repeats it: ${error instanceof Error ? error.message : String(error)}`));
+    if (plan.mode !== "batch" || !plan.saveCursor || !hub) return;
+    log(`This pass stopped after ${plan.cursor}.`);
+    await reportToHub(hub, { kind: "cursor", cursor: plan.cursor }).catch((error: unknown) => warn(`Couldn't tell the hub where this pass stopped, so the next pass repeats it: ${error instanceof Error ? error.message : String(error)}`));
   }
 
   protected delivery(plan: QualityPlan): Delivery {
@@ -172,17 +160,5 @@ When you are done:
 
   private scope(areas: string[]): SourceScope {
     return { areas: areas.map(normalizePath), exclude: this.#options.exclude.map(normalizePath), extensions: this.#options.extensions };
-  }
-
-  private async lastCursor(): Promise<string> {
-    const { github, runId, hosted, hub } = this.settings;
-    if (hosted) return hub?.cursor ?? "";
-    const own = await github.workflowRun(runId);
-    const runs = await github.workflowRuns(own.workflow_id, await this.defaultBranch());
-    for (const run of runs.filter((candidate) => candidate.id !== own.id && !candidate.event.startsWith("pull_request")).slice(0, RUNS_CHECKED_FOR_CURSOR)) {
-      const marker = await github.runAnnotation(run.id, CURSOR_TITLE);
-      if (marker) return parseCursor(marker.message);
-    }
-    return "";
   }
 }

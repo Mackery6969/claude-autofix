@@ -44,6 +44,10 @@ test("your pull requests get a quality pass; bots, drafts, forks and Claude's ow
   const [quality] = enqueued("pull_request", payload({ action: "opened", pull_request: pull() }));
   assert.deepEqual([quality?.task, quality?.pullRequest, quality?.sender], ["quality", 4, "Mackery6969"]);
   assert.deepEqual(enqueued("pull_request", payload({ action: "opened", pull_request: pull({ draft: true }) })), []);
+  assert.deepEqual(enqueued("pull_request", payload({ action: "opened", pull_request: pull() })).map((entry) => entry.task), ["quality"]);
+  const ready = enqueued("pull_request", payload({ action: "ready_for_review", pull_request: pull() }));
+  assert.deepEqual(ready.map((entry) => `${entry.task}:${entry.pullRequest}`), ["quality:4", "security:4"]);
+  assert.equal(ready[1]?.due, now + ALERT_SETTLE_MS);
   assert.deepEqual(enqueued("pull_request", payload({ action: "opened", pull_request: pull({ head: { ref: "x", sha: "a", repo: { full_name: "someone/game" } } }) })), []);
   assert.deepEqual(enqueued("pull_request", payload({ action: "synchronize", pull_request: pull() })), []);
   assert.deepEqual(enqueued("pull_request", payload({ action: "opened", pull_request: pull(), sender: { login: "claude-autofix[bot]", type: "Bot" } })), []);

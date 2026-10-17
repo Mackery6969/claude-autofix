@@ -1,5 +1,3 @@
-import { ActionFailure } from "./actions.ts";
-
 export class GitHubError extends Error {
   readonly status: number;
 
@@ -62,35 +60,6 @@ export interface Issue {
 export interface Comment {
   id: number;
   body: string | null;
-}
-
-export interface WorkflowRun {
-  id: number;
-  workflow_id: number;
-  name: string;
-  event: string;
-  status: string;
-  conclusion: string | null;
-  head_branch: string | null;
-  created_at: string;
-  html_url: string;
-}
-
-export interface Job {
-  id: number;
-  name: string;
-  check_run_url?: string;
-}
-
-export function checkRunId(job: Job): number {
-  const fromUrl = Number(job.check_run_url?.split("/").pop());
-  return Number.isInteger(fromUrl) && fromUrl > 0 ? fromUrl : job.id;
-}
-
-export interface Annotation {
-  title: string | null;
-  message: string;
-  annotation_level: string;
 }
 
 export interface GitHubOptions {
@@ -175,7 +144,7 @@ export class GitHub {
     return issues.filter((issue) => !issue.pull_request);
   }
 
-  pullRequest(number: number): Promise<PullRequest & { draft?: boolean; merged?: boolean; user: { login: string; type: string }; base: { ref: string } }> {
+  pullRequest(number: number): Promise<PullRequest & { draft?: boolean; user: { login: string; type: string }; base: { ref: string } }> {
     return this.request("GET", `/repos/${this.repository}/pulls/${number}`);
   }
 
@@ -227,39 +196,11 @@ export class GitHub {
     return commit.sha;
   }
 
-  async suggestChanges(number: number, commitId: string, body: string, suggestions: Array<{ path: string; line: number; note: string; replacement: string }>): Promise<void> {
-    if (suggestions.length === 0) return;
-    await this.request("POST", `/repos/${this.repository}/pulls/${number}/reviews`, {
-      commit_id: commitId,
-      event: "COMMENT",
-      body,
-      comments: suggestions.map((suggestion) => ({
-        path: suggestion.path,
-        line: suggestion.line,
-        side: "RIGHT",
-        body: `${suggestion.note}\n\n\`\`\`suggestion\n${suggestion.replacement}\n\`\`\``,
-      })),
-    });
-  }
-
   async upsertComment(number: number, marker: string, body: string): Promise<void> {
     const existing = await this.findComment(number, marker);
     const text = `${body}\n\n${marker}`;
     if (existing) await this.request("PATCH", `/repos/${this.repository}/issues/comments/${existing.id}`, { body: text });
     else await this.request("POST", `/repos/${this.repository}/issues/${number}/comments`, { body: text });
-  }
-
-  async workflowRuns(workflowId: number, branch: string): Promise<WorkflowRun[]> {
-    const result = await this.request<{ workflow_runs: WorkflowRun[] }>("GET", `/repos/${this.repository}/actions/workflows/${workflowId}/runs?branch=${encodeURIComponent(branch)}&status=completed&per_page=20`);
-    return result.workflow_runs;
-  }
-
-  async runAnnotation(runId: number, title: string): Promise<Annotation | undefined> {
-    for (const job of await this.jobs(runId)) {
-      const match = (await this.annotations(job)).find((annotation) => annotation.title === title);
-      if (match) return match;
-    }
-    return undefined;
   }
 
   private async paginate<T>(path: (page: number) => string, pages: number): Promise<T[]> {
@@ -284,51 +225,6 @@ export class GitHub {
     if (labels.length === 0) return;
     await this.request("POST", `/repos/${this.repository}/issues/${number}/labels`, { labels });
   }
-
-  workflowRun(runId: number | string): Promise<WorkflowRun> {
-    return this.request("GET", `/repos/${this.repository}/actions/runs/${runId}`);
-  }
-
-  async recentRuns(since: Date, pages = 3): Promise<WorkflowRun[]> {
-    const created = encodeURIComponent(`>=${since.toISOString().slice(0, 10)}`);
-    const runs: WorkflowRun[] = [];
-    for (let page = 1; page <= pages; page++) {
-      const result = await this.request<{ workflow_runs: WorkflowRun[] }>("GET", `/repos/${this.repository}/actions/runs?created=${created}&per_page=100&page=${page}`);
-      runs.push(...result.workflow_runs);
-      if (result.workflow_runs.length < 100) break;
-    }
-    return runs;
-  }
-
-  async jobs(runId: number): Promise<Job[]> {
-    const result = await this.request<{ jobs: Job[] }>("GET", `/repos/${this.repository}/actions/runs/${runId}/jobs?filter=latest&per_page=100`);
-    return result.jobs;
-  }
-
-  annotations(job: Job): Promise<Annotation[]> {
-    return this.request("GET", `/repos/${this.repository}/check-runs/${checkRunId(job)}/annotations?per_page=100`);
-  }
-
-  async cancelRun(runId: number | string): Promise<void> {
-    await this.request("POST", `/repos/${this.repository}/actions/runs/${runId}/cancel`);
-  }
-
-  async rerun(runId: number): Promise<void> {
-    await this.request("POST", `/repos/${this.repository}/actions/runs/${runId}/rerun`);
-  }
-
-  async dispatchWorkflow(workflow: number | string, ref: string): Promise<void> {
-    await this.request("POST", `/repos/${this.repository}/actions/workflows/${encodeURIComponent(String(workflow))}/dispatches`, { ref });
-  }
-
-  async enableWorkflow(workflow: number | string): Promise<void> {
-    await this.request("PUT", `/repos/${this.repository}/actions/workflows/${encodeURIComponent(String(workflow))}/enable`);
-  }
-
-  async disableWorkflow(workflow: number | string): Promise<void> {
-    await this.request("PUT", `/repos/${this.repository}/actions/workflows/${encodeURIComponent(String(workflow))}/disable`);
-  }
-
 }
 
 function errorMessage(body: string): string {
@@ -339,8 +235,7 @@ function errorMessage(body: string): string {
   }
 }
 
-export function gitHubFromEnvironment(token: string, repository = process.env.GITHUB_REPOSITORY): GitHub {
-  if (!repository) throw new ActionFailure("GITHUB_REPOSITORY is not set. This action only runs inside GitHub Actions.");
+export function gitHubFor(token: string, repository: string): GitHub {
   return new GitHub({ token, apiUrl: process.env.GITHUB_API_URL ?? "https://api.github.com", repository });
 }
 

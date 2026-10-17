@@ -1,10 +1,8 @@
-import { eventPayload } from "./actions.ts";
 import type { GitHub, PullRequestFile } from "./github.ts";
 
 export interface PullRequestEvent {
   number: number;
   draft?: boolean;
-  merged?: boolean;
   user: { login: string; type: string };
   head: { ref: string; sha: string; repo: { full_name: string } | null };
   base: { ref: string };
@@ -21,14 +19,6 @@ export interface ChangeSet {
 }
 
 export type PullRequestMode = "commit" | "pull-request";
-
-export function pullRequestFromEvent(): PullRequestEvent | undefined {
-  return eventPayload<{ pull_request?: PullRequestEvent }>()?.pull_request;
-}
-
-export function eventAction(): string {
-  return eventPayload<{ action?: string }>()?.action ?? "";
-}
 
 export function changeSetFromPullRequest(pull: PullRequestEvent, repository: string): ChangeSet {
   return {

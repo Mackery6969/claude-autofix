@@ -49,6 +49,7 @@ const ALERT_ACTIONS = new Set(["created", "reopened", "appeared_in_branch"]);
 const ISSUE_ACTIONS = new Set(["opened", "labeled", "reopened"]);
 const DEPENDABOT_ACTIONS = new Set(["created", "reopened", "auto_reopened"]);
 const QUALITY_PULL_ACTIONS = new Set(["opened", "reopened", "ready_for_review"]);
+const SECURITY_PULL_ACTIONS = new Set(["reopened", "ready_for_review"]);
 
 export function jobKey(job: Pick<Job, "repository" | "task" | "ref" | "pullRequest">): string {
   return `job:${job.repository}|${job.task}|${job.pullRequest ? `pr-${job.pullRequest}` : job.ref}`;
@@ -90,7 +91,9 @@ export function effectsOf(event: string, payload: WebhookPayload, context: Routi
       return ownRepository && isClaudeBranch(pull.head.ref) ? [known, { kind: "delete-branch", repository: repository.full_name, installation, branch: pull.head.ref, sha: pull.head.sha }] : [known];
     }
     if (bySelf || !QUALITY_PULL_ACTIONS.has(payload.action ?? "") || pull.draft || !ownRepository || isClaudeBranch(pull.head.ref) || pull.user.type === "Bot") return [known];
-    return [known, job("quality", pull.head.ref, 0, { sha: pull.head.sha, pullRequest: pull.number, sender: pull.user.login })];
+    const changes = { sha: pull.head.sha, pullRequest: pull.number, sender: pull.user.login };
+    const security = SECURITY_PULL_ACTIONS.has(payload.action ?? "") ? [job("security", pull.head.ref, ALERT_SETTLE_MS, changes)] : [];
+    return [known, job("quality", pull.head.ref, 0, changes), ...security];
   }
   if (bySelf) return [known];
 

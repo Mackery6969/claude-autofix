@@ -10,12 +10,17 @@ try {
   const runner = setting("CLAUDE_AUTOFIX_RUNNER");
   const hubSecret = setting("CLAUDE_AUTOFIX_HUB_SECRET");
   const appKey = setting("CLAUDE_APP_PRIVATE_KEY");
-  const url = deployWorker({ clientId: setting("CLAUDE_APP_CLIENT_ID"), slug: setting("CLAUDE_APP_SLUG"), runner, owners: setting("CLAUDE_AUTOFIX_OWNERS").split(","), ignored: [ACTION_REPOSITORY] });
+  const url = deployWorker({ clientId: setting("CLAUDE_APP_CLIENT_ID"), slug: setting("CLAUDE_APP_SLUG"), runner, owners: setting("CLAUDE_AUTOFIX_OWNERS").split(","), ignored: (process.env.CLAUDE_AUTOFIX_IGNORED ?? "").split(/[\s,]+/).filter(Boolean) });
   console.log(`Deployed the hub at ${url}`);
   putWorkerSecrets({ GITHUB_APP_PRIVATE_KEY: appKey, GITHUB_WEBHOOK_SECRET: setting("CLAUDE_AUTOFIX_WEBHOOK_SECRET"), HUB_SECRET: hubSecret, ADMIN_SECRET: setting("CLAUDE_AUTOFIX_ADMIN_SECRET") });
   console.log("Set the hub's secrets");
 
-  console.log(writeRunnerWorkflow(runner) ? `Updated ${RUNNER_WORKFLOW} in ${runner}` : `${runner} already has the current runner workflow`);
+  try {
+    console.log(writeRunnerWorkflow(runner) ? `Updated ${RUNNER_WORKFLOW} in ${runner}` : `${runner} already has the current runner workflow`);
+  } catch (error) {
+    if (!(error instanceof SetupError)) throw error;
+    console.log(`::notice title=Runner workflow not updated::${error.message}`);
+  }
   setOnRepository(runner, { CLAUDE_CODE_OAUTH_TOKEN: setting("CLAUDE_CODE_OAUTH_TOKEN"), CLAUDE_APP_PRIVATE_KEY: appKey, CLAUDE_AUTOFIX_HUB_SECRET: hubSecret }, { CLAUDE_APP_CLIENT_ID: setting("CLAUDE_APP_CLIENT_ID"), CLAUDE_AUTOFIX_HUB_URL: url });
   setOnRepository(ACTION_REPOSITORY, {}, { CLAUDE_AUTOFIX_HUB_URL: url });
   console.log(`::notice title=Claude Autofix hub::Webhook URL for the app: ${url}/webhook`);

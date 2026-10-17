@@ -1,10 +1,10 @@
 name: "Claude Autofix"
-description: "Has Claude fix code scanning alerts and issues, and make weekly code-quality passes, as Dependabot-style pull requests, pausing on usage limits."
+description: "Runs Claude Autofix for one repository from the hub's runner: fixes code scanning alerts, Dependabot alerts and issues, and makes code-quality passes, as pull requests."
 author: "Mackery"
 
 inputs:
   task:
-    description: "What to do: security (fix or dismiss open code scanning alerts and work on issues), quality (one code-quality pass) or resume (restart runs paused by a usage limit)."
+    description: "What to do: security (fix or dismiss open code scanning alerts and Dependabot alerts, and work on issues) or quality (one code-quality pass)."
     required: true
   claude-code-oauth-token:
     description: "Token for your Claude subscription, from `claude setup-token`. Without it (or anthropic-api-key) Claude is off for this repository."
@@ -13,14 +13,11 @@ inputs:
     description: "Anthropic API key, billed per use. Alternative to claude-code-oauth-token."
     default: ""
   github-token:
-    description: "Token for the GitHub API and for pushing branches. Pass a GitHub App token here (with app-slug) so Claude's work shows up as your app."
-    default: ${{ github.token }}
+    description: "The GitHub App's installation token for the repository, from actions/create-github-app-token."
+    required: true
   app-slug:
-    description: "Slug of the GitHub App whose token is in github-token, from actions/create-github-app-token. Commits are then made as <slug>[bot], and workflow files can be changed."
-    default: ""
-  pr-token:
-    description: "Optional personal access token to push and open pull requests with, instead of github-token. A GitHub App is the better choice."
-    default: ""
+    description: "The GitHub App's slug, from actions/create-github-app-token. Commits are made as <slug>[bot]."
+    required: true
   model:
     description: "Claude model. Defaults to claude-opus-5-5 for security and claude-sonnet-5-5 for quality."
     default: ""
@@ -39,9 +36,6 @@ inputs:
   force:
     description: "security: triage findings earlier pull requests covered, replacing an open one. quality: start a pass even if the last one is still open."
     default: "false"
-  resume-workflow:
-    description: "File name of this repository's resume workflow, turned on when a run pauses."
-    default: "claude-resume.yml"
   code-scanning-tools:
     description: "security: which scanners' code scanning alerts to work on (such as CodeQL or GML Code Scanner), one per line. all takes every scanner; none works on issues only."
     default: "all"
@@ -88,28 +82,28 @@ inputs:
     description: "quality: extra guidance for this repository, added to the prompt."
     default: ""
   repository:
-    description: "Hosted mode: the owner/name of the repository to work on when this runs from a central runner repository. Leave empty in the repository's own workflows."
-    default: ""
+    description: "The repository to work on, as owner/name."
+    required: true
   ref:
-    description: "Hosted mode: the branch to work on. The default branch gets the scheduled work; any other branch only what differs from it."
+    description: "the branch to work on. The default branch gets the scheduled work; any other branch only what differs from it."
     default: ""
   sha:
-    description: "Hosted mode: the commit of ref to work from."
+    description: "the commit of ref to work from."
     default: ""
   pull-request:
-    description: "Hosted mode: the pull request to work on, if any."
+    description: "the pull request to work on, if any."
     default: ""
   sender:
-    description: "Hosted mode: who made the change, checked against pull-request-authors."
+    description: "who made the change, checked against pull-request-authors."
     default: ""
   hub-url:
-    description: "Hosted mode: the Claude Autofix hub to report pauses and quality progress to."
+    description: "the Claude Autofix hub to report pauses and quality progress to."
     default: ""
   hub-secret:
-    description: "Hosted mode: the secret shared with the hub, used to sign reports."
+    description: "the secret shared with the hub, used to sign reports."
     default: ""
   cursor:
-    description: "Hosted mode: where the last quality pass stopped, passed on by the hub."
+    description: "where the last quality pass stopped, passed on by the hub."
     default: ""
 
 outputs:
@@ -125,8 +119,6 @@ outputs:
     description: "When a paused run starts again (ISO 8601)."
   claude-cost-usd:
     description: "What the Claude run would cost at API prices."
-  resumed:
-    description: "resume: how many paused runs were started again."
 
 runs:
   using: "node24"

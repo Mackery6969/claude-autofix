@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
 
 export class ActionFailure extends Error {}
 
@@ -89,16 +89,6 @@ export function untrustedOutput(title: string, write: () => void): void {
     write();
   } finally {
     end();
-  }
-}
-
-export function eventPayload<T>(): T | undefined {
-  const path = process.env.GITHUB_EVENT_PATH;
-  if (!path) return undefined;
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as T;
-  } catch {
-    return undefined;
   }
 }
 
