@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { createVerify, generateKeyPairSync } from "node:crypto";
+import { createSign, createVerify, generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
 import { sign } from "../src/base/hub.ts";
-import { appJwt, pkcs8FromPem } from "../worker/src/github.ts";
+import { appJwt, base64Url, pkcs8FromPem } from "../worker/src/github.ts";
+import { ACTIONS_ISSUER, HUB_AUDIENCE, reportKey, TokenError, verifyActionsToken, type SigningKey } from "../worker/src/oidc.ts";
+import { contentHash, gitBlobSha, SHARED_WORKFLOW, workflowFiles } from "../worker/src/workflow.ts";
 import { ALERT_SETTLE_MS, CHECKS_SETTLE_MS, CONVERSATION_SETTLE_MS, DEPENDABOT_GRACE_MS, effectsOf, jobKey, mergeJobs, type Job, type WebhookPayload } from "../worker/src/routing.ts";
 import { hubSettings, parseConfig, TASKS } from "../src/base/settings.ts";
 import { runnerWorkflows } from "../scripts/hub-deploy.ts";
@@ -262,4 +264,60 @@ test("the runner gets one workflow per task, each calling the shared one", () =>
   assert.match(scan, /task: scan$/m);
   assert.match(scan, /uses: \.\/\.github\/workflows\/claude-autofix\.yml/);
   assert.doesNotMatch(Object.values(workflows).join("\n"), /__TASK__|__TITLE__/);
+});
+
+function actionsToken(claims: Record<string, unknown>, kid = "key-1") {
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const unsigned = `${base64Url(JSON.stringify({ alg: "RS256", kid }))}.${base64Url(JSON.stringify(claims))}`;
+  const signature = createSign("RSA-SHA256").update(unsigned).sign(privateKey);
+  const jwk = publicKey.export({ format: "jwk" }) as { kty: string; n: string; e: string };
+  return { token: `${unsigned}.${base64Url(new Uint8Array(signature))}`, keys: async (): Promise<SigningKey[]> => [{ ...jwk, kid: "key-1" }] };
+}
+
+const seconds = Math.floor(now / 1000);
+const goodClaims = { iss: ACTIONS_ISSUER, aud: HUB_AUDIENCE, exp: seconds + 300, nbf: seconds - 10, repository: "me/app", job_workflow_ref: `Mackery6969/Claude-Autofix/${SHARED_WORKFLOW}@refs/tags/v3`, event_name: "workflow_dispatch", actor: "me" };
+
+test("the hub accepts a GitHub Actions token meant for it", async () => {
+  const { token, keys } = actionsToken(goodClaims);
+  const claims = await verifyActionsToken(token, now, keys);
+  assert.equal(claims.repository, "me/app");
+});
+
+test("the hub refuses tokens for someone else, expired ones, unknown keys and forged ones", async () => {
+  for (const claims of [{ ...goodClaims, aud: "https://github.com/me" }, { ...goodClaims, exp: seconds - 1 }, { ...goodClaims, iss: "https://example.com" }]) {
+    const { token, keys } = actionsToken(claims);
+    await assert.rejects(verifyActionsToken(token, now, keys), TokenError);
+  }
+  const unknown = actionsToken(goodClaims, "key-2");
+  await assert.rejects(verifyActionsToken(unknown.token, now, unknown.keys), TokenError);
+  const forged = actionsToken(goodClaims);
+  const [header, , signature] = forged.token.split(".");
+  await assert.rejects(verifyActionsToken(`${header}.${base64Url(JSON.stringify({ ...goodClaims, repository: "them/app" }))}.${signature}`, now, forged.keys), TokenError);
+});
+
+test("a run signs its reports with a key only good for its own repository", async () => {
+  const key = await reportKey("hub-secret", "me/app");
+  const body = JSON.stringify({ job: { repository: "me/app" } });
+  assert.equal(await verifySignature(key, body, sign(key, body)), true);
+  assert.equal(await verifySignature(await reportKey("hub-secret", "me/other"), body, sign(key, body)), false);
+  assert.equal(key, await reportKey("hub-secret", "Me/App"));
+});
+
+test("the hub installs one workflow per enabled task, each calling the shared one", async () => {
+  const files = workflowFiles(["security", "scan"], "Mackery6969/Claude-Autofix", "v3", "https://hub.example.workers.dev");
+  assert.deepEqual(Object.keys(files), ["claude-security.yml", "claude-scan.yml"]);
+  const scan = files["claude-scan.yml"] ?? "";
+  assert.match(scan, /^name: Claude Code Scanning$/m);
+  assert.match(scan, /uses: Mackery6969\/Claude-Autofix\/\.github\/workflows\/run\.yml@v3/);
+  assert.match(scan, /hub-url: https:\/\/hub\.example\.workers\.dev$/m);
+  assert.match(scan, /task: scan$/m);
+  assert.match(scan, /id-token: write/);
+  const all = workflowFiles(TASKS, "Mackery6969/Claude-Autofix", "v3", "https://hub.example.workers.dev");
+  assert.equal(new Set(Object.keys(all)).size, TASKS.length);
+  assert.notEqual(await contentHash(files), await contentHash(all));
+  assert.equal(await contentHash(files), await contentHash({ "claude-scan.yml": scan, "claude-security.yml": files["claude-security.yml"] ?? "" }));
+});
+
+test("workflow files are compared by their git blob hash", async () => {
+  assert.equal(await gitBlobSha("hello\n"), "ce013625030ba8dba906f756967f9e9ca394464a");
 });

@@ -60,9 +60,14 @@ The pull request description says what changed in each file and why behaviour is
 | --- | --- | --- |
 | GitHub App | Your account | Gives Claude its own identity and access to the repositories you install it on, and sends their events to the hub. |
 | Hub | A Cloudflare Worker ([`worker/`](worker)) | Receives the app's webhooks, queues work, runs the schedules, and keeps what little state there is: where each quality pass stopped, and one usage-limit pause shared by every repository (they all spend the same subscription). |
-| Runner | A private repository of yours, with [`examples/runner.yml`](examples/runner.yml) and a workflow per task made from [`examples/runner-task.yml`](examples/runner-task.yml) | The hub dispatches jobs to it. Each job gets a token for one repository, checks it out and runs this action. Claude's token, the app key and every run's logs stay in this one private repository. |
+| Workflows | One per task in each repository, added by the hub | Short files, so each task shows up in the repository's own **Actions** tab like CodeQL does: **Claude Security**, **Claude Fix**, **Claude Code Scanning**, **Claude Code Quality** and **Claude Conversations** (`.github/workflows/claude-<task>.yml`). Each calls [`.github/workflows/run.yml`](.github/workflows/run.yml) from this repository at `@v3`, which does the work. |
+| Runner | A private repository of yours, with [`examples/runner.yml`](examples/runner.yml) | The fallback: the hub sends a repository's jobs here until its own workflows are in place, or if it can't add them. |
 
-Nothing is committed to the repositories it works on, and every part is deployed from this repository, so an update reaches all of them at once.
+**Setting up a repository is installing the app on it.** Within a few minutes the hub commits a workflow for each task the repository's settings turn on to its default branch, in one commit. Those are the only files it ever commits there directly. Turn a task off in `.github/claude-autofix.yml` and the hub removes its workflow. The files hold no credentials. Each run proves to the hub which repository and workflow it is, with the OIDC token GitHub gives every run, and gets Claude's token and a GitHub token for that repository back. So a file only works when it calls this repository's shared workflow, from a repository the hub permits.
+
+**Everything updates by itself.** The shared workflow and the action come from `@v3`, so a release reaches every repository at once. If the files themselves change (a new hub address, say), the hub rewrites them in each repository, a couple of repositories every 5 minutes. `node scripts/hub.ts list` shows each repository's workflows as current, out of date, not installed, or one the hub couldn't install. A protected default branch is the usual reason; that repository keeps using the runner.
+
+In a public repository, the run logs are public, like its other workflow logs. Tokens are masked, but Claude's notes on the code are visible.
 
 **It only works where you choose.** While the app is installable only on your account, installing it on a repository is how you turn it on there. The hub also only works on repositories owned by the accounts in `PERMITTED_OWNERS` (you) and on ones you permit by name, so even if you let other accounts install the app, it does nothing for them until you say so.
 
@@ -76,7 +81,7 @@ node scripts/hub.ts revoke someone/their-project   # stop, and drop anything que
 
 These commands are signed with an admin secret that only your machine and the hub have.
 
-You can also run a task straight from the runner repository's **Actions** tab: each task (Security, Fix, Scan, Quality, Conversation) is its own workflow there, so you can filter runs by task and press **Run workflow** on one. Give it a repository, and optionally a branch, pull request or issue. Unlike `hub.ts run`, it starts right away, even while the hub is paused for a usage limit, and a Scan run started this way begins a new lap from the start of the project.
+You can also run a task from a repository's own **Actions** tab: pick its workflow, such as **Claude Code Scanning**, then **Run workflow**, optionally with a branch, pull request or issue. Unlike `hub.ts run`, it starts right away, even while the hub is paused for a usage limit. Scan and quality runs started this way carry on from where the last pass stopped. If one hits a session or weekly limit, the hub starts it again once the limit resets, like any other run.
 
 ## Setting it up
 
@@ -286,7 +291,8 @@ Nothing sleeps in a job waiting for a limit, and Claude can't start subagents, s
 - Anyone can open an issue on a public repository, so issue text reaches Claude as a description of a problem only, and everything still arrives as a pull request you review. Issues are only picked up if they carry one of `issue-labels`, and each is handled once, so a flood of unlabelled issues costs nothing.
 - Claude gets file tools (read, edit, search) and Bash restricted to a handful of commands: your `verify-command` and read-only `git diff`/`git status`/`git log`. It can't start subagents, browse the web, or push.
 - The action's inputs, tokens and runner credentials are removed from the environment Claude and your `verify-command` see. Claude can't read `.git/`, and the runner checks out with `persist-credentials: false` so no token is left in the checkout.
-- Every request to the hub is signed: GitHub's webhooks with the webhook secret, the runner's reports with the hub secret, and your admin commands with an admin secret that never leaves your machine and the hub.
+- Every request to the hub is signed: GitHub's webhooks with the webhook secret, your admin commands with an admin secret that never leaves your machine and the hub, and each run's reports with a key that only works for its own repository.
+- The hub only hands credentials to a run whose GitHub OIDC token shows it's this repository's `run.yml`, started by `workflow_dispatch`, in a repository the hub permits. The GitHub token it hands out only covers that repository.
 - Only branches in your own repository count as Claude's, so a fork can't pass off a branch named `claude/security/...` as an earlier triage.
 - A repository's own `CLAUDE.md`, `.claude/settings.json` and `.github/claude-autofix.yml` steer Claude there, so whoever can change those can. That's normally only you. The settings file can't set credentials.
 - Everything Claude does arrives as a pull request or a commit on your own pull request or branch. Nothing reaches your default branch without you.
@@ -300,20 +306,20 @@ Check `node scripts/hub.ts list`: the repository should be listed and permitted.
 Give the app the **Dependabot alerts** permission (read and write), then accept it on the installation.
 
 **"Claude isn't enabled for this repository"**
-The runner has no `CLAUDE_CODE_OAUTH_TOKEN`. Check the secret on this repository and run **Deploy hub**.
+The hub has no `CLAUDE_CODE_OAUTH_TOKEN`. Check the secret on this repository and run **Deploy hub**.
 
 **"Dropped Claude's change to …"**
 Claude edited a file outside its batch or an excluded path.
 
 **"verify-command failed after Claude's changes"**
-Nothing was pushed. The attempted diff is in the run log, in the runner repository.
+Nothing was pushed. The attempted diff is in the run log, in the repository's Actions tab.
 
 **Deploy hub says "No access to the specified resource"**
 The Cloudflare API token can't manage Workers on the account. The deploy's error lists the permissions it needs.
 
 ## Versioning
 
-Releases follow semantic versioning. Each release is tagged `vMAJOR.MINOR.PATCH`, and the major tag (such as `v3`) moves to the newest release, so the runner's `@v3` gets fixes without breaking changes. The bundled Claude Code version follows `@anthropic-ai/claude-agent-sdk`, which Dependabot keeps current.
+Releases follow semantic versioning. Each release is tagged `vMAJOR.MINOR.PATCH`, and the major tag (such as `v3`) moves to the newest release, so every repository's `@v3` gets fixes without breaking changes. The bundled Claude Code version follows `@anthropic-ai/claude-agent-sdk`, which Dependabot keeps current.
 
 ## License
 
