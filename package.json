@@ -1,6 +1,6 @@
 {
   "name": "claude-autofix",
-  "version": "3.1.2",
+  "version": "3.1.3",
   "description": "A GitHub Action that has Claude fix code scanning alerts and issues and make weekly code-quality passes, opening Dependabot-style pull requests and pausing on usage limits.",
   "type": "module",
   "private": true,
