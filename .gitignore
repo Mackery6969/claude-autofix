@@ -7,3 +7,9 @@ semgrep-results.json
 *.sarif
 .claude-pr.md
 .claude-pr-changes.diff
+.wrangler/
+.dev.vars*
+.env
+.env.*
+*.pem
+*-secret
