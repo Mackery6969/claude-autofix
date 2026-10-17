@@ -119,7 +119,7 @@ These commands are signed with an admin secret that only your machine and the hu
 
 ### Setting it up
 
-Everything the hub needs is kept as secrets on this repository, and the **Deploy hub** workflow ([`hub.yml`](.github/workflows/hub.yml)) deploys it to Cloudflare and keeps the runner up to date. Every release runs it, so the hub, the runner workflow and the action always match.
+Everything the hub needs is kept as secrets on this repository, and the **Deploy hub** workflow ([`hub.yml`](.github/workflows/hub.yml)) deploys it to Cloudflare and keeps the runner up to date. It runs whenever a commit to `main` changes the hub (`worker/`, the runner workflow or the deploy scripts), and on every release.
 
 1. Add a `CLOUDFLARE_API_TOKEN` secret to this repository: a Cloudflare API token made from the **Edit Cloudflare Workers** template. `CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_APP_PRIVATE_KEY` are already here from the quick start.
 2. Give the app **Secrets** and **Variables** (read and write) under **Permissions & events**, and accept them on the installation. Deploys use them to keep the runner's secrets current.
