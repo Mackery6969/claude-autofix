@@ -12,7 +12,7 @@ try {
   const appKey = setting("CLAUDE_APP_PRIVATE_KEY");
   const url = deployWorker({ clientId: setting("CLAUDE_APP_CLIENT_ID"), slug: setting("CLAUDE_APP_SLUG"), runner, owners: setting("CLAUDE_AUTOFIX_OWNERS").split(","), ignored: (process.env.CLAUDE_AUTOFIX_IGNORED ?? "").split(/[\s,]+/).filter(Boolean) });
   console.log(`Deployed the hub at ${url}`);
-  putWorkerSecrets({ GITHUB_APP_PRIVATE_KEY: appKey, GITHUB_WEBHOOK_SECRET: setting("CLAUDE_AUTOFIX_WEBHOOK_SECRET"), HUB_SECRET: hubSecret, ADMIN_SECRET: setting("CLAUDE_AUTOFIX_ADMIN_SECRET") });
+  putWorkerSecrets({ GITHUB_APP_PRIVATE_KEY: appKey, GITHUB_WEBHOOK_SECRET: setting("CLAUDE_AUTOFIX_WEBHOOK_SECRET"), HUB_SECRET: hubSecret, ADMIN_SECRET: setting("CLAUDE_AUTOFIX_ADMIN_SECRET"), CLAUDE_CODE_OAUTH_TOKEN: setting("CLAUDE_CODE_OAUTH_TOKEN"), HUB_URL: url });
   console.log("Set the hub's secrets");
 
   try {

@@ -5,6 +5,8 @@ import { WAITING_MARKER, waitingNote } from "../../src/base/notes.ts";
 import { dueJobs, newRecord, scheduledWork, type RepositoryRecord } from "./schedule.ts";
 import { GITHUB_SIGNATURE_HEADER, REPORT_SIGNATURE_HEADER, verifySignature } from "./signatures.ts";
 import { State, type KeyValueStore } from "./state.ts";
+import { reportKey, TokenError, verifyActionsToken } from "./oidc.ts";
+import { contentHash, gitBlobSha, SHARED_WORKFLOW, TASK_WORKFLOWS, WORKFLOW_DIRECTORY, workflowFiles } from "./workflow.ts";
 
 export interface Env {
   STATE: KeyValueStore;
@@ -12,6 +14,10 @@ export interface Env {
   APP_SLUG: string;
   RUNNER_REPOSITORY: string;
   RUNNER_REF: string;
+  ACTION_REPOSITORY: string;
+  ACTION_VERSION: string;
+  HUB_URL?: string;
+  CLAUDE_CODE_OAUTH_TOKEN?: string;
   PERMITTED_OWNERS: string;
   IGNORED_REPOSITORIES: string;
   GITHUB_APP_PRIVATE_KEY: string;
@@ -47,6 +53,13 @@ const RETRY_AFTER_MS = 15 * 60_000;
 const TASKS = new Set<string>(["security", "fix", "scan", "quality", "conversation"]);
 const QUEUEABLE = new Set<string>(["security", "fix", "scan", "quality"]);
 const PUSH_SETTLE_MS = 2 * 60_000;
+const WORKFLOW_INSTALLS_PER_TICK = 2;
+const FAILED = "failed:";
+
+interface CredentialsRequest {
+  token?: string;
+  task?: string;
+}
 
 class Hub {
   readonly env: Env;
@@ -139,7 +152,7 @@ class Hub {
     let settings = hubSettings(new Map());
     try {
       const file = await this.app.as<{ content: string }>(installation, "GET", `/repos/${repository}/contents/${CONFIG_FILE}?ref=${encodeURIComponent(branch)}`);
-      settings = hubSettings(parseConfig(new TextDecoder().decode(Uint8Array.from(atob(file.content.replace(/\s+/g, "")), (character) => character.charCodeAt(0)))));
+      settings = hubSettings(parseConfig(decodeBase64(file.content)));
     } catch (error) {
       if (error instanceof ConfigError) console.log(`${repository}: ${error.message} Using the defaults until it's fixed.`);
       else if (!(error instanceof GitHubApiError && error.status === 404)) throw error;
@@ -192,6 +205,8 @@ class Hub {
       if (work.record !== record) await this.state.saveRepository(work.record);
     }
 
+    await this.installWorkflows(log).catch((error: unknown) => log.push(`Couldn't install workflows: ${error instanceof Error ? error.message : String(error)}`));
+
     const pause = await this.state.pause();
     if (pause && pause.until > now) {
       log.push(`Paused on a usage limit until ${new Date(pause.until).toISOString()}.`);
@@ -200,7 +215,8 @@ class Hub {
 
     const due = dueJobs(await this.state.jobs(), now, DISPATCHES_PER_TICK);
     if (due.length === 0) return log;
-    const runnerInstallation = await this.app.installationFor(this.env.RUNNER_REPOSITORY);
+    let runner: number | undefined;
+    const runnerInstallation = async () => (runner ??= await this.app.installationFor(this.env.RUNNER_REPOSITORY));
     for (const job of due) {
       if (!(await this.permitted(job.repository))) {
         await this.state.finish(job);
@@ -218,7 +234,66 @@ class Hub {
     return log;
   }
 
-  async dispatch(runnerInstallation: number, job: Job): Promise<void> {
+  async workflowsFor(repository: string): Promise<{ files: Record<string, string>; hash: string } | undefined> {
+    if (!this.env.HUB_URL) return undefined;
+    const { tasks } = await this.state.settings(repository);
+    const files = workflowFiles(tasks, this.env.ACTION_REPOSITORY, this.env.ACTION_VERSION, this.env.HUB_URL.replace(/\/+$/, ""));
+    return { files, hash: await contentHash(files) };
+  }
+
+  async installWorkflows(log: string[]): Promise<void> {
+    if (!this.env.HUB_URL) return;
+    const pending: Array<{ record: RepositoryRecord; files: Record<string, string>; hash: string }> = [];
+    for (const record of await this.state.repositories()) {
+      const wanted = await this.workflowsFor(record.repository);
+      if (!wanted || record.workflow === wanted.hash || record.workflow === `${FAILED}${wanted.hash}`) continue;
+      if (await this.permitted(record.repository)) pending.push({ record, ...wanted });
+    }
+    const [first] = pending;
+    if (!first) return;
+    try {
+      await this.app.as(first.record.installation, "GET", `/repos/${this.env.ACTION_REPOSITORY}/contents/${SHARED_WORKFLOW}?ref=${encodeURIComponent(this.env.ACTION_VERSION)}`);
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) return void log.push(`${this.env.ACTION_REPOSITORY}@${this.env.ACTION_VERSION} has no ${SHARED_WORKFLOW} yet, so repositories keep using the runner until it's released.`);
+      throw error;
+    }
+    for (const { record, files, hash } of pending.slice(0, WORKFLOW_INSTALLS_PER_TICK)) log.push(await this.commitWorkflows(record, files, hash));
+  }
+
+  async commitWorkflows(record: RepositoryRecord, files: Record<string, string>, hash: string): Promise<string> {
+    const { repository, installation, defaultBranch } = record;
+    try {
+      let existing: Array<{ name: string; sha: string; type: string }> = [];
+      try {
+        existing = await this.app.as(installation, "GET", `/repos/${repository}/contents/${WORKFLOW_DIRECTORY}?ref=${encodeURIComponent(defaultBranch)}`);
+      } catch (error) {
+        if (!(error instanceof GitHubApiError && error.status === 404)) throw error;
+      }
+      const present = new Map(existing.filter((entry) => entry.type === "file").map((entry) => [entry.name, entry.sha]));
+      const changes: Array<{ path: string; mode: "100644"; type: "blob"; content?: string; sha?: null }> = [];
+      for (const { file } of Object.values(TASK_WORKFLOWS)) {
+        const path = `${WORKFLOW_DIRECTORY}/${file}`;
+        const content = files[file];
+        if (content !== undefined && present.get(file) !== (await gitBlobSha(content))) changes.push({ path, mode: "100644", type: "blob", content });
+        if (content === undefined && present.has(file)) changes.push({ path, mode: "100644", type: "blob", sha: null });
+      }
+      if (changes.length) {
+        const ref = await this.app.as<{ object: { sha: string } }>(installation, "GET", `/repos/${repository}/git/ref/heads/${encodeRef(defaultBranch)}`);
+        const parent = await this.app.as<{ tree: { sha: string } }>(installation, "GET", `/repos/${repository}/git/commits/${ref.object.sha}`);
+        const tree = await this.app.as<{ sha: string }>(installation, "POST", `/repos/${repository}/git/trees`, { base_tree: parent.tree.sha, tree: changes });
+        const commit = await this.app.as<{ sha: string }>(installation, "POST", `/repos/${repository}/git/commits`, { message: "Update the Claude Autofix workflows", tree: tree.sha, parents: [ref.object.sha] });
+        await this.app.as(installation, "PATCH", `/repos/${repository}/git/refs/heads/${encodeRef(defaultBranch)}`, { sha: commit.sha });
+      }
+      await this.state.saveRepository({ ...record, workflow: hash });
+      return changes.length ? `Updated ${changes.map((change) => change.path.slice(WORKFLOW_DIRECTORY.length + 1)).join(", ")} in ${repository}.` : `${repository} already has the current workflows.`;
+    } catch (error) {
+      if (!(error instanceof GitHubApiError)) throw error;
+      await this.state.saveRepository({ ...record, workflow: `${FAILED}${hash}` });
+      return `Couldn't write the workflows to ${repository}, so it keeps using the runner: ${error.message}`;
+    }
+  }
+
+  async dispatch(runnerInstallation: () => Promise<number>, job: Job): Promise<void> {
     const record = await this.state.repository(job.repository);
     const onDefaultBranch = !job.pullRequest && job.ref === record?.defaultBranch;
     let { sha, sender } = job;
@@ -227,9 +302,19 @@ class Hub {
       sha ||= commit.sha;
       sender ||= commit.author?.login ?? commit.committer?.login ?? "";
     }
-    const inputs: Record<string, string> = { repository: job.repository, ref: job.ref, sha, before: job.before ?? "", "pull-request": job.pullRequest ? String(job.pullRequest) : "", issue: job.issue ? String(job.issue) : "", sender };
+    const inputs: Record<string, string> = { ref: job.ref, sha, before: job.before ?? "", "pull-request": job.pullRequest ? String(job.pullRequest) : "", issue: job.issue ? String(job.issue) : "", sender };
     if ((job.task === "quality" || job.task === "scan") && onDefaultBranch && !job.before) inputs.cursor = await this.state.cursor(job.repository, job.task);
-    await this.app.as(runnerInstallation, "POST", `/repos/${this.env.RUNNER_REPOSITORY}/actions/workflows/${job.task}.yml/dispatches`, { ref: this.env.RUNNER_REF || "main", inputs });
+    if (record?.workflow && !record.workflow.startsWith(FAILED) && (await this.state.settings(job.repository)).tasks.includes(job.task)) {
+      try {
+        await this.app.as(job.installation, "POST", `/repos/${job.repository}/actions/workflows/${TASK_WORKFLOWS[job.task].file}/dispatches`, { ref: record.defaultBranch, inputs });
+        return;
+      } catch (error) {
+        if (error instanceof GitHubApiError && (error.status === 404 || error.status === 422)) await this.state.saveRepository({ ...record, workflow: undefined });
+        throw error;
+      }
+    }
+    if (!this.env.RUNNER_REPOSITORY) throw new Error(`${job.repository} doesn't have ${TASK_WORKFLOWS[job.task].file} yet.`);
+    await this.app.as(await runnerInstallation(), "POST", `/repos/${this.env.RUNNER_REPOSITORY}/actions/workflows/${job.task}.yml/dispatches`, { ref: this.env.RUNNER_REF || "main", inputs: { ...inputs, repository: job.repository } });
   }
 
   async report(report: HubReport, now: number): Promise<Response> {
@@ -263,11 +348,36 @@ class Hub {
     if (settings.tasks.includes("scan")) await this.state.enqueue({ ...next, due: now + settings.scanPace });
   }
 
+  async credentials(request: CredentialsRequest, now: number): Promise<Response> {
+    if (!this.env.CLAUDE_CODE_OAUTH_TOKEN) return text("The hub has no CLAUDE_CODE_OAUTH_TOKEN. Run Deploy hub.", 503);
+    let claims;
+    try {
+      claims = await verifyActionsToken(request.token ?? "", now);
+    } catch (error) {
+      if (error instanceof TokenError) return text(error.message, 401);
+      throw error;
+    }
+    const shared = `${this.env.ACTION_REPOSITORY}/${SHARED_WORKFLOW}@`.toLowerCase();
+    if (!claims.job_workflow_ref.toLowerCase().startsWith(shared)) return text(`Only ${this.env.ACTION_REPOSITORY}'s ${SHARED_WORKFLOW} gets credentials, not ${claims.job_workflow_ref}.`, 403);
+    if (claims.event_name !== "workflow_dispatch") return text("Claude Autofix only runs from workflow_dispatch.", 403);
+    const task = request.task ?? "";
+    if (!TASKS.has(task)) return text("Unknown task.", 400);
+    const record = await this.state.repository(claims.repository);
+    if (!record || !(await this.permitted(claims.repository))) return text(`${claims.repository} isn't permitted.`, 403);
+    return json({
+      "claude-token": this.env.CLAUDE_CODE_OAUTH_TOKEN,
+      "github-token": await this.app.repositoryToken(record.installation, claims.repository),
+      "app-slug": this.env.APP_SLUG,
+      "report-key": await reportKey(this.env.HUB_SECRET, claims.repository),
+      cursor: task === "scan" || task === "quality" ? await this.state.cursor(claims.repository, task) : "",
+    });
+  }
+
   async admin(request: AdminRequest, now: number): Promise<Response> {
     const repository = request.repository?.trim() ?? "";
     if (request.action === "list") {
       const records = await this.state.repositories();
-      const rows = await Promise.all(records.map(async (record) => ({ repository: record.repository, permitted: await this.permitted(record.repository) })));
+      const rows = await Promise.all(records.map(async (record) => ({ repository: record.repository, permitted: await this.permitted(record.repository), workflows: workflowState(record.workflow, (await this.workflowsFor(record.repository))?.hash) })));
       const pause = await this.state.pause();
       return json({ owners: this.owners, permits: await this.state.permits(), repositories: rows, queued: (await this.state.jobs()).map(({ repository: name, task, ref, pullRequest, due }) => ({ repository: name, task, ref, pullRequest, due: new Date(due).toISOString() })), pausedUntil: pause && pause.until > now ? new Date(pause.until).toISOString() : null });
     }
@@ -298,6 +408,16 @@ class Hub {
   }
 }
 
+function workflowState(installed: string | undefined, current: string | undefined): string {
+  if (!installed) return "not installed";
+  if (installed.startsWith(FAILED)) return "couldn't install";
+  return installed === current ? "current" : "out of date";
+}
+
+function decodeBase64(content: string): string {
+  return new TextDecoder().decode(Uint8Array.from(atob(content.replace(/\s+/g, "")), (character) => character.charCodeAt(0)));
+}
+
 function text(body: string, status: number): Response {
   return new Response(body, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
 }
@@ -322,9 +442,12 @@ export default {
       return text(`Handled ${effects.length} effect(s).`, 200);
     }
     const signature = request.headers.get(REPORT_SIGNATURE_HEADER);
+    if (pathname === "/credentials") return hub.credentials(JSON.parse(body) as CredentialsRequest, now);
     if (pathname === "/report") {
-      if (!(await verifySignature(env.HUB_SECRET, body, signature))) return text("Bad signature.", 401);
-      return hub.report(JSON.parse(body) as HubReport, now);
+      const report = JSON.parse(body) as HubReport;
+      const repositoryKey = await reportKey(env.HUB_SECRET, report.job?.repository ?? "");
+      if (!(await verifySignature(env.HUB_SECRET, body, signature)) && !(await verifySignature(repositoryKey, body, signature))) return text("Bad signature.", 401);
+      return hub.report(report, now);
     }
     if (pathname === "/admin") {
       if (!(await verifySignature(env.ADMIN_SECRET, body, signature))) return text("Bad signature.", 401);

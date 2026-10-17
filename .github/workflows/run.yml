@@ -1,0 +1,85 @@
+name: Claude Autofix
+
+on:
+  workflow_call:
+    inputs:
+      hub-url:
+        type: string
+        required: true
+      task:
+        type: string
+        required: true
+      ref:
+        type: string
+        default: ""
+      sha:
+        type: string
+        default: ""
+      before:
+        type: string
+        default: ""
+      pull-request:
+        type: string
+        default: ""
+      issue:
+        type: string
+        default: ""
+      sender:
+        type: string
+        default: ""
+      cursor:
+        type: string
+        default: ""
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.task == 'quality' && 60 || 355 }}
+    steps:
+      - id: hub
+        name: Get credentials from the hub
+        env:
+          HUB_URL: ${{ inputs.hub-url }}
+          TASK: ${{ inputs.task }}
+        run: |
+          set -euo pipefail
+          oidc="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=claude-autofix-hub" | jq -r .value)"
+          if ! response="$(curl -sS --fail-with-body -X POST "${HUB_URL%/}/credentials" -H "Content-Type: application/json" --data "$(jq -n --arg token "$oidc" --arg task "$TASK" '{token: $token, task: $task}')")"; then
+            echo "::error title=The hub refused this run::$response"
+            exit 1
+          fi
+          for name in claude-token github-token report-key; do
+            value="$(jq -r --arg name "$name" '.[$name]' <<<"$response")"
+            echo "::add-mask::$value"
+            echo "$name=$value" >> "$GITHUB_OUTPUT"
+          done
+          echo "app-slug=$(jq -r '.["app-slug"]' <<<"$response")" >> "$GITHUB_OUTPUT"
+          echo "cursor=$(jq -r '.cursor // ""' <<<"$response")" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.sha || inputs.ref }}
+          token: ${{ steps.hub.outputs.github-token }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: Mackery6969/Claude-Autofix@v3
+        with:
+          task: ${{ inputs.task }}
+          repository: ${{ github.repository }}
+          ref: ${{ inputs.ref }}
+          sha: ${{ inputs.sha }}
+          before: ${{ inputs.before }}
+          pull-request: ${{ inputs.pull-request }}
+          issue: ${{ inputs.issue }}
+          sender: ${{ inputs.sender }}
+          cursor: ${{ inputs.cursor || steps.hub.outputs.cursor }}
+          claude-code-oauth-token: ${{ steps.hub.outputs.claude-token }}
+          github-token: ${{ steps.hub.outputs.github-token }}
+          app-slug: ${{ steps.hub.outputs.app-slug }}
+          hub-url: ${{ inputs.hub-url }}
+          hub-secret: ${{ steps.hub.outputs.report-key }}

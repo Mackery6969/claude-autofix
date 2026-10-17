@@ -111,6 +111,12 @@ export class GitHubApp {
     return created.token;
   }
 
+  async repositoryToken(installation: number, repository: string): Promise<string> {
+    const name = repository.split("/")[1] ?? repository;
+    const created = await request<{ token: string }>(await appJwt(this.#credentials), "POST", `/app/installations/${installation}/access_tokens`, { repositories: [name] });
+    return created.token;
+  }
+
   async as<T>(installation: number, method: string, path: string, body?: unknown): Promise<T> {
     return request<T>(await this.token(installation), method, path, body);
   }

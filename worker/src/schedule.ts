@@ -12,6 +12,7 @@ export interface RepositoryRecord {
   last?: Partial<Record<ScheduledTask, number>>;
   lastSecurity?: number;
   lastQuality?: number;
+  workflow?: string;
 }
 
 export function spread(repository: string, period: number): number {

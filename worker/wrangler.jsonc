@@ -10,6 +10,8 @@
     "APP_SLUG": "",
     "RUNNER_REPOSITORY": "",
     "RUNNER_REF": "main",
+    "ACTION_REPOSITORY": "Mackery6969/Claude-Autofix",
+    "ACTION_VERSION": "v3",
     "PERMITTED_OWNERS": "",
     "IGNORED_REPOSITORIES": ""
   }
