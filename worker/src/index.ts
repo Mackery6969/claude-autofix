@@ -55,6 +55,8 @@ const QUEUEABLE = new Set<string>(["security", "fix", "scan", "quality"]);
 const PUSH_SETTLE_MS = 2 * 60_000;
 const WORKFLOW_INSTALLS_PER_TICK = 2;
 const FAILED = "failed:";
+const PROPOSED = "proposed:";
+const WORKFLOW_BRANCH = "claude-autofix/workflows";
 
 interface CredentialsRequest {
   token?: string;
@@ -163,11 +165,17 @@ class Hub {
 
   async push(effect: Extract<Effect, { kind: "push" }>, now: number): Promise<void> {
     const onDefaultBranch = effect.branch === effect.defaultBranch;
+    if (onDefaultBranch && effect.paths.some((path) => path.startsWith(`${WORKFLOW_DIRECTORY}/claude-`))) await this.recheckWorkflows(effect.repository);
     const settings = onDefaultBranch && effect.paths.includes(CONFIG_FILE) ? await this.refreshSettings(effect.repository, effect.installation, effect.branch) : await this.state.settings(effect.repository);
     if (!settings.scanOnPush) return;
     if (settings.scanBranches.length && !matchesAny(effect.branch, settings.scanBranches)) return;
     if (effect.paths.length && settings.scanPaths.length && !effect.paths.some((path) => matchesAny(path, settings.scanPaths))) return;
     await this.state.enqueue({ repository: effect.repository, installation: effect.installation, task: "scan", ref: effect.branch, sha: effect.after, before: effect.before, pullRequest: undefined, issue: undefined, sender: effect.sender, due: now + PUSH_SETTLE_MS });
+  }
+
+  async recheckWorkflows(repository: string): Promise<void> {
+    const record = await this.state.repository(repository);
+    if (record?.workflow) await this.state.saveRepository({ ...record, workflow: undefined });
   }
 
   async deleteBranch(effect: Extract<Effect, { kind: "delete-branch" }>): Promise<void> {
@@ -190,7 +198,10 @@ class Hub {
         seen.push(repository.full_name);
       }
     }
-    for (const record of await this.state.repositories()) if (!seen.includes(record.repository)) await this.state.forgetRepository(record.repository);
+    for (const record of await this.state.repositories()) {
+      if (!seen.includes(record.repository)) await this.state.forgetRepository(record.repository);
+      else if (record.workflow?.startsWith(FAILED)) await this.state.saveRepository({ ...record, workflow: undefined });
+    }
     await this.state.synced(now);
     return seen;
   }
@@ -246,7 +257,7 @@ class Hub {
     const pending: Array<{ record: RepositoryRecord; files: Record<string, string>; hash: string }> = [];
     for (const record of await this.state.repositories()) {
       const wanted = await this.workflowsFor(record.repository);
-      if (!wanted || record.workflow === wanted.hash || record.workflow === `${FAILED}${wanted.hash}`) continue;
+      if (!wanted || [wanted.hash, `${FAILED}${wanted.hash}`, `${PROPOSED}${wanted.hash}`].includes(record.workflow ?? "")) continue;
       if (await this.permitted(record.repository)) pending.push({ record, ...wanted });
     }
     const [first] = pending;
@@ -282,7 +293,12 @@ class Hub {
         const parent = await this.app.as<{ tree: { sha: string } }>(installation, "GET", `/repos/${repository}/git/commits/${ref.object.sha}`);
         const tree = await this.app.as<{ sha: string }>(installation, "POST", `/repos/${repository}/git/trees`, { base_tree: parent.tree.sha, tree: changes });
         const commit = await this.app.as<{ sha: string }>(installation, "POST", `/repos/${repository}/git/commits`, { message: "Update the Claude Autofix workflows", tree: tree.sha, parents: [ref.object.sha] });
-        await this.app.as(installation, "PATCH", `/repos/${repository}/git/refs/heads/${encodeRef(defaultBranch)}`, { sha: commit.sha });
+        try {
+          await this.app.as(installation, "PATCH", `/repos/${repository}/git/refs/heads/${encodeRef(defaultBranch)}`, { sha: commit.sha });
+        } catch (error) {
+          if (!(error instanceof GitHubApiError) || ![403, 409, 422].includes(error.status)) throw error;
+          return await this.proposeWorkflows(record, commit.sha, hash);
+        }
       }
       await this.state.saveRepository({ ...record, workflow: hash });
       return changes.length ? `Updated ${changes.map((change) => change.path.slice(WORKFLOW_DIRECTORY.length + 1)).join(", ")} in ${repository}.` : `${repository} already has the current workflows.`;
@@ -291,6 +307,26 @@ class Hub {
       await this.state.saveRepository({ ...record, workflow: `${FAILED}${hash}` });
       return `Couldn't write the workflows to ${repository}, so it keeps using the runner: ${error.message}`;
     }
+  }
+
+  async proposeWorkflows(record: RepositoryRecord, commit: string, hash: string): Promise<string> {
+    const { repository, installation, defaultBranch } = record;
+    try {
+      await this.app.as(installation, "POST", `/repos/${repository}/git/refs`, { ref: `refs/heads/${WORKFLOW_BRANCH}`, sha: commit });
+    } catch (error) {
+      if (!(error instanceof GitHubApiError && error.status === 422)) throw error;
+      await this.app.as(installation, "PATCH", `/repos/${repository}/git/refs/heads/${encodeRef(WORKFLOW_BRANCH)}`, { sha: commit, force: true });
+    }
+    const owner = repository.split("/")[0];
+    const open = await this.app.as<Array<{ html_url: string }>>(installation, "GET", `/repos/${repository}/pulls?state=open&head=${encodeURIComponent(`${owner}:${WORKFLOW_BRANCH}`)}`);
+    const pull = open[0] ?? (await this.app.as<{ html_url: string }>(installation, "POST", `/repos/${repository}/pulls`, {
+      title: "Add the Claude Autofix workflows",
+      head: WORKFLOW_BRANCH,
+      base: defaultBranch,
+      body: `${defaultBranch} only takes changes through pull requests, so here are Claude Autofix's workflows: one for each task \`.github/claude-autofix.yml\` turns on. They hold no credentials; each calls the shared workflow in ${this.env.ACTION_REPOSITORY} and gets what it needs from the hub when it runs.\n\nUntil this is merged, Claude keeps running from the runner repository. Once it is, Claude's runs show up in this repository's Actions tab.\n\nTo let the hub update these files itself next time, add the app to the ruleset's bypass list.`,
+    }));
+    await this.state.saveRepository({ ...record, workflow: `${PROPOSED}${hash}` });
+    return `${defaultBranch} in ${repository} needs a pull request, so the workflows are in ${pull.html_url}.`;
   }
 
   async dispatch(runnerInstallation: () => Promise<number>, job: Job): Promise<void> {
@@ -304,7 +340,7 @@ class Hub {
     }
     const inputs: Record<string, string> = { ref: job.ref, sha, before: job.before ?? "", "pull-request": job.pullRequest ? String(job.pullRequest) : "", issue: job.issue ? String(job.issue) : "", sender };
     if ((job.task === "quality" || job.task === "scan") && onDefaultBranch && !job.before) inputs.cursor = await this.state.cursor(job.repository, job.task);
-    if (record?.workflow && !record.workflow.startsWith(FAILED) && (await this.state.settings(job.repository)).tasks.includes(job.task)) {
+    if (record?.workflow && !record.workflow.includes(":") && (await this.state.settings(job.repository)).tasks.includes(job.task)) {
       try {
         await this.app.as(job.installation, "POST", `/repos/${job.repository}/actions/workflows/${TASK_WORKFLOWS[job.task].file}/dispatches`, { ref: record.defaultBranch, inputs });
         return;
@@ -411,6 +447,7 @@ class Hub {
 function workflowState(installed: string | undefined, current: string | undefined): string {
   if (!installed) return "not installed";
   if (installed.startsWith(FAILED)) return "couldn't install";
+  if (installed.startsWith(PROPOSED)) return installed === `${PROPOSED}${current}` ? "waiting for its pull request" : "out of date";
   return installed === current ? "current" : "out of date";
 }
 
