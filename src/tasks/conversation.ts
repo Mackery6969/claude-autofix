@@ -125,7 +125,7 @@ export function transcript(thread: Thread, entries: ThreadEntry[], fresh: Thread
     const reply = entry.kind === "review-comment" ? ` (review comment id ${entry.replyTo ?? entry.id})` : "";
     lines.push(`## ${entry.kind} by @${entry.author} (${flags}) at ${entry.at}${where}${reply}`, "");
     if (entry.hunk) lines.push("```diff", entry.hunk, "```", "");
-    lines.push(entry.body.trim() || "(no text)", "");
+    lines.push((entry.body.trim() || "(no text)").replace(/^/gm, "> "), "");
   }
   if (automatic.length) lines.push("## Since your last reply (NEW, automatic)", "", ...automatic, "");
   return lines.join("\n");
