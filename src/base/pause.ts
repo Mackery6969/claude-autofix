@@ -4,7 +4,7 @@ import { describeLimit, type UsageLimit } from "./limits.ts";
 
 const MARGIN_MS = 2 * 60 * 1000;
 
-export async function pauseRun(usage: UsageLimit, hub: Hub | undefined): Promise<void> {
+export async function pauseRun(usage: UsageLimit, hub: Hub | undefined): Promise<Date> {
   const resumeAt = new Date(usage.resetsAt.getTime() + MARGIN_MS);
   const when = resumeAt.toUTCString();
   notice(`Claude ${describeLimit(usage.type)} reached; nothing was changed. Resuming after ${when}.`);
@@ -12,7 +12,7 @@ export async function pauseRun(usage: UsageLimit, hub: Hub | undefined): Promise
   setOutput("resume-at", resumeAt.toISOString());
   if (!hub) {
     summary(`## Paused: Claude ${describeLimit(usage.type)} reached\n\nNothing was changed. No hub is set, so start this again by hand after **${when}**.`);
-    return;
+    return resumeAt;
   }
   try {
     await reportToHub(hub, { kind: "paused", resumeAt: resumeAt.toISOString() });
@@ -20,4 +20,5 @@ export async function pauseRun(usage: UsageLimit, hub: Hub | undefined): Promise
   } catch (error) {
     warn(`Couldn't tell the hub about the pause (${error instanceof Error ? error.message : String(error)}). The next scheduled run picks this up after ${when}.`);
   }
+  return resumeAt;
 }

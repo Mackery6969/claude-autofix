@@ -133,6 +133,8 @@ export abstract class ClaudeTask<Plan> {
     return false;
   }
 
+  protected async paused(_plan: Plan, _resumeAt: Date): Promise<void> {}
+
   protected get pushOptions(): Omit<PushOptions, "branch"> {
     return {
       cwd: this.settings.workspace,
@@ -304,7 +306,7 @@ export abstract class ClaudeTask<Plan> {
       readOnly: this.readOnly(plan),
     });
     if (outcome.kind === "limited") {
-      await pauseRun(outcome.limit, this.settings.hub);
+      await this.paused(plan, await pauseRun(outcome.limit, this.settings.hub));
       return undefined;
     }
     if (!outcome.result) throw new ActionFailure(`Claude stopped unexpectedly: ${outcome.failure ?? "no result"}`);

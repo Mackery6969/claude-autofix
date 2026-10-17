@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Thread } from "../src/base/github.ts";
+import { WAITING_MARKER, waitingNote } from "../src/base/notes.ts";
 import { AUTOMATIC_REPLY_MARKER, automaticRoundsSinceTrusted, freshEntries, isTrusted, lastReplyAt, mentions, newSinceClaude, parseRequests, referencedAlerts, REPLY_MARKER, tail, transcript, type ThreadEntry } from "../src/tasks/conversation.ts";
 
 const entry = (at: string, overrides: Partial<ThreadEntry> = {}): ThreadEntry => ({ kind: "comment", id: Number(at.replace(/\D/g, "").slice(-6)), author: "Mackery6969", trusted: true, mine: false, at, body: "Please rename this.", ...overrides });
@@ -69,4 +70,11 @@ test("work requests only accept security sweeps and quality passes", () => {
 test("alerts are found by number or by link", () => {
   const entries = [entry("1", { body: "Alert #244 is a false positive, and so is https://github.com/o/r/security/code-scanning/31" }), entry("2", { body: "alerts 7 too, but not issue #9" })];
   assert.deepEqual(referencedAlerts(entries), [244, 31, 7]);
+});
+
+test("the waiting note says when Claude will answer, in UTC, and carries the marker that keeps it to one per thread", () => {
+  const note = waitingNote(new Date("2026-10-17T09:12:44Z"));
+  assert.match(note, /after \*\*2026-10-17 09:12 UTC\*\*/);
+  assert.ok(note.endsWith(WAITING_MARKER));
+  assert.ok(!note.includes("<!-- claude-autofix:reply"));
 });

@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { log, warn } from "../base/actions.ts";
 import { reportToHub } from "../base/hub.ts";
+import { WAITING_MARKER, waitingNote } from "../base/notes.ts";
 import { checkoutBranchAt } from "../base/git.ts";
 import type { Comment, Review, ReviewComment, Thread } from "../base/github.ts";
 import type { PathRules } from "../base/paths.ts";
@@ -246,6 +247,11 @@ export class ConversationTask extends ClaudeTask<ConversationPlan> {
   private async issuePullRequestBranch(issue: number): Promise<string | undefined> {
     const open = await this.ownPullRequests("open");
     return open.find((pull) => keysInMarker(pull.body ?? "").includes(`issue-${issue}`))?.head.ref;
+  }
+
+  protected async paused(plan: ConversationPlan, resumeAt: Date): Promise<void> {
+    if (plan.isAutomatic) return;
+    await this.settings.github.upsertComment(plan.thread.number, WAITING_MARKER, waitingNote(resumeAt)).catch((error: unknown) => warn(`Couldn't say in #${plan.thread.number} that Claude is waiting: ${error instanceof Error ? error.message : String(error)}`));
   }
 
   protected describe(plan: ConversationPlan): string {

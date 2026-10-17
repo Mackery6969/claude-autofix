@@ -1,6 +1,7 @@
 import { encodeRef, GitHubApiError, GitHubApp } from "./github.ts";
 import { effectsOf, isClaudeBranch, isIgnored, type Effect, type Job, type Task, type WebhookPayload } from "./routing.ts";
 import { CONFIG_FILE, ConfigError, hubSettings, matchesAny, parseConfig, type HubSettings } from "../../src/base/settings.ts";
+import { WAITING_MARKER, waitingNote } from "../../src/base/notes.ts";
 import { dueJobs, newRecord, scheduledWork, type RepositoryRecord } from "./schedule.ts";
 import { GITHUB_SIGNATURE_HEADER, REPORT_SIGNATURE_HEADER, verifySignature } from "./signatures.ts";
 import { State, type KeyValueStore } from "./state.ts";
@@ -83,7 +84,9 @@ class Hub {
       case "enqueue": {
         if (!(await this.permitted(effect.job.repository))) return;
         const job = await this.resolve(effect.job);
-        if (job && (await this.state.settings(job.repository)).tasks.includes(job.task)) await this.state.enqueue(job);
+        if (!job || !(await this.state.settings(job.repository)).tasks.includes(job.task)) return;
+        await this.state.enqueue(job);
+        if (job.task === "conversation") await this.noteIfPaused(job, now);
         return;
       }
       case "push":
@@ -93,6 +96,18 @@ class Hub {
         if (await this.permitted(effect.repository)) await this.deleteBranch(effect);
         return;
     }
+  }
+
+  async noteIfPaused(job: Job, now: number): Promise<void> {
+    const pause = await this.state.pause();
+    const thread = job.pullRequest ?? job.issue;
+    if (!pause || pause.until <= now || !thread) return;
+    const bot = `${this.env.APP_SLUG}[bot]`.toLowerCase();
+    const body = waitingNote(new Date(pause.until));
+    const comments = await this.app.as<Array<{ id: number; body: string | null; user: { login: string } | null }>>(job.installation, "GET", `/repos/${job.repository}/issues/${thread}/comments?per_page=100`);
+    const existing = comments.find((comment) => comment.user?.login.toLowerCase() === bot && comment.body?.includes(WAITING_MARKER));
+    if (existing) await this.app.as(job.installation, "PATCH", `/repos/${job.repository}/issues/comments/${existing.id}`, { body });
+    else await this.app.as(job.installation, "POST", `/repos/${job.repository}/issues/${thread}/comments`, { body });
   }
 
   async claudeTookPart(job: Job, number: number): Promise<boolean> {

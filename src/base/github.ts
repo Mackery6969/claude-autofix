@@ -290,7 +290,7 @@ export class GitHub {
 
   async upsertComment(number: number, marker: string, body: string): Promise<void> {
     const existing = await this.findComment(number, marker);
-    const text = `${body}\n\n${marker}`;
+    const text = body.includes(marker) ? body : `${body}\n\n${marker}`;
     if (existing) await this.request("PATCH", `/repos/${this.repository}/issues/comments/${existing.id}`, { body: text });
     else await this.request("POST", `/repos/${this.repository}/issues/${number}/comments`, { body: text });
   }
