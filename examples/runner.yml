@@ -1,5 +1,5 @@
 name: Claude Autofix
-run-name: ${{ inputs.task }} · ${{ inputs.repository }}${{ inputs.pull-request && format(' #{0}', inputs.pull-request) || format(' · {0}', inputs.ref) }}
+run-name: "${{ inputs.task }} · ${{ inputs.repository }}${{ inputs.pull-request && format(' #{0}', inputs.pull-request) || format(' · {0}', inputs.ref) }}"
 
 on:
   workflow_dispatch:
