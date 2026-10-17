@@ -1,0 +1,16 @@
+{
+  "name": "claude-autofix-hub",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "kv_namespaces": [{ "binding": "STATE" }],
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "observability": { "enabled": true },
+  "vars": {
+    "APP_CLIENT_ID": "",
+    "APP_SLUG": "",
+    "RUNNER_REPOSITORY": "",
+    "RUNNER_WORKFLOW": "claude-autofix.yml",
+    "RUNNER_REF": "main",
+    "PERMITTED_OWNERS": ""
+  }
+}

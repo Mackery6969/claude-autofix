@@ -152,17 +152,22 @@ export class GitHub {
     return this.paginate<PullRequestFile>((page) => `/repos/${this.repository}/pulls/${number}/files?per_page=100&page=${page}`, 30);
   }
 
+  async compareFiles(base: string, head: string): Promise<PullRequestFile[]> {
+    const comparison = await this.request<{ files?: PullRequestFile[] }>("GET", `/repos/${this.repository}/compare/${encodeRef(base)}...${encodeRef(head)}`);
+    return comparison.files ?? [];
+  }
+
   comments(number: number): Promise<Comment[]> {
     return this.paginate<Comment>((page) => `/repos/${this.repository}/issues/${number}/comments?per_page=100&page=${page}`, 10);
   }
 
   async branchesStartingWith(prefix: string): Promise<Branch[]> {
-    const refs = await this.request<Array<{ ref: string; object: { sha: string } }>>("GET", `/repos/${this.repository}/git/matching-refs/heads/${prefix.split("/").map(encodeURIComponent).join("/")}`);
+    const refs = await this.request<Array<{ ref: string; object: { sha: string } }>>("GET", `/repos/${this.repository}/git/matching-refs/heads/${encodeRef(prefix)}`);
     return refs.map((ref) => ({ name: ref.ref.replace(/^refs\/heads\//, ""), sha: ref.object.sha }));
   }
 
   async deleteBranch(name: string): Promise<void> {
-    await this.request("DELETE", `/repos/${this.repository}/git/refs/heads/${name.split("/").map(encodeURIComponent).join("/")}`);
+    await this.request("DELETE", `/repos/${this.repository}/git/refs/heads/${encodeRef(name)}`);
   }
 
   async openIssues(): Promise<Issue[]> {
@@ -170,7 +175,7 @@ export class GitHub {
     return issues.filter((issue) => !issue.pull_request);
   }
 
-  pullRequest(number: number): Promise<PullRequest & { draft?: boolean; merged?: boolean; user: { login: string; type: string } }> {
+  pullRequest(number: number): Promise<PullRequest & { draft?: boolean; merged?: boolean; user: { login: string; type: string }; base: { ref: string } }> {
     return this.request("GET", `/repos/${this.repository}/pulls/${number}`);
   }
 
@@ -334,8 +339,11 @@ function errorMessage(body: string): string {
   }
 }
 
-export function gitHubFromEnvironment(token: string): GitHub {
-  const repository = process.env.GITHUB_REPOSITORY;
+export function gitHubFromEnvironment(token: string, repository = process.env.GITHUB_REPOSITORY): GitHub {
   if (!repository) throw new ActionFailure("GITHUB_REPOSITORY is not set. This action only runs inside GitHub Actions.");
   return new GitHub({ token, apiUrl: process.env.GITHUB_API_URL ?? "https://api.github.com", repository });
+}
+
+function encodeRef(ref: string): string {
+  return ref.split("/").map(encodeURIComponent).join("/");
 }

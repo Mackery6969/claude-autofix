@@ -1,5 +1,5 @@
 import { eventPayload } from "./actions.ts";
-import type { PullRequestFile } from "./github.ts";
+import type { GitHub, PullRequestFile } from "./github.ts";
 
 export interface PullRequestEvent {
   number: number;
@@ -7,6 +7,17 @@ export interface PullRequestEvent {
   merged?: boolean;
   user: { login: string; type: string };
   head: { ref: string; sha: string; repo: { full_name: string } | null };
+  base: { ref: string };
+}
+
+export interface ChangeSet {
+  pullRequest: number | undefined;
+  branch: string;
+  sha: string;
+  base: string;
+  author: { login: string; type: string };
+  draft: boolean;
+  fromFork: boolean;
 }
 
 export type PullRequestMode = "commit" | "pull-request";
@@ -19,11 +30,35 @@ export function eventAction(): string {
   return eventPayload<{ action?: string }>()?.action ?? "";
 }
 
-export function whyNotEligible(pull: PullRequestEvent, repository: string, authors: string[]): string | undefined {
-  if (pull.head.repo?.full_name !== repository) return "it comes from a fork";
-  if (pull.draft) return "it's a draft";
-  if (pull.user.type === "Bot" || pull.head.ref.startsWith("claude/")) return "it was opened by a bot";
-  if (!authors.some((author) => author.toLowerCase() === pull.user.login.toLowerCase())) return `only pull requests by ${authors.join(", ")} are handled (pull-request-authors)`;
+export function changeSetFromPullRequest(pull: PullRequestEvent, repository: string): ChangeSet {
+  return {
+    pullRequest: pull.number,
+    branch: pull.head.ref,
+    sha: pull.head.sha,
+    base: pull.base.ref,
+    author: pull.user,
+    draft: Boolean(pull.draft),
+    fromFork: pull.head.repo?.full_name !== repository,
+  };
+}
+
+export function changeSetName(changes: ChangeSet): string {
+  return changes.pullRequest ? `#${changes.pullRequest}` : `\`${changes.branch}\``;
+}
+
+export function alertsRef(changes: ChangeSet): string {
+  return changes.pullRequest ? `refs/pull/${changes.pullRequest}/merge` : `refs/heads/${changes.branch}`;
+}
+
+export async function filesChanged(github: GitHub, changes: ChangeSet): Promise<PullRequestFile[]> {
+  return changes.pullRequest ? github.pullRequestFiles(changes.pullRequest) : github.compareFiles(changes.base, changes.sha);
+}
+
+export function whyNotEligible(changes: ChangeSet, authors: string[]): string | undefined {
+  if (changes.fromFork) return "it comes from a fork";
+  if (changes.draft) return "it's a draft";
+  if (changes.author.type === "Bot" || changes.branch.startsWith("claude/")) return "it was made by a bot";
+  if (!authors.some((author) => author.toLowerCase() === changes.author.login.toLowerCase())) return `only changes by ${authors.join(", ")} are handled (pull-request-authors)`;
   return undefined;
 }
 

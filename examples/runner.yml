@@ -1,0 +1,78 @@
+name: Claude Autofix
+run-name: ${{ inputs.task }} · ${{ inputs.repository }}${{ inputs.pull-request && format(' #{0}', inputs.pull-request) || format(' · {0}', inputs.ref) }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Repository to work on (owner/name)
+        required: true
+      task:
+        description: security or quality
+        required: true
+        default: security
+      ref:
+        description: Branch (the default branch gets the scheduled work; any other branch only what differs from it)
+        default: ""
+      sha:
+        description: Commit of ref
+        default: ""
+      pull-request:
+        description: Pull request number
+        default: ""
+      sender:
+        description: Who made the change
+        default: ""
+      cursor:
+        description: Where the last quality pass stopped
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ inputs.repository }}-${{ inputs.task }}-${{ inputs.pull-request || inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.task == 'quality' && 60 || 355 }}
+    steps:
+      - id: target
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+        run: |
+          if [[ ! "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::repository must be owner/name"
+            exit 1
+          fi
+          echo "owner=${REPOSITORY%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+      - uses: actions/create-github-app-token@v3
+        id: app
+        with:
+          client-id: ${{ vars.CLAUDE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAUDE_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.sha || inputs.ref }}
+          token: ${{ steps.app.outputs.token }}
+          persist-credentials: false
+      - uses: Mackery6969/Claude-Autofix@v2
+        with:
+          task: ${{ inputs.task }}
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          sha: ${{ inputs.sha }}
+          pull-request: ${{ inputs.pull-request }}
+          sender: ${{ inputs.sender }}
+          cursor: ${{ inputs.cursor }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
+          app-slug: ${{ steps.app.outputs.app-slug }}
+          hub-url: ${{ vars.CLAUDE_AUTOFIX_HUB_URL }}
+          hub-secret: ${{ secrets.CLAUDE_AUTOFIX_HUB_SECRET }}

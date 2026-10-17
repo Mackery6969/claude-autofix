@@ -1,6 +1,6 @@
 {
   "name": "claude-autofix",
-  "version": "2.0.0",
+  "version": "2.2.0",
   "description": "A GitHub Action that has Claude fix code scanning alerts and issues and make weekly code-quality passes, opening Dependabot-style pull requests and pausing on usage limits.",
   "type": "module",
   "private": true,
@@ -29,7 +29,9 @@
     "typecheck": "tsc",
     "test": "node --test \"test/**/*.test.ts\"",
     "check": "npm run typecheck && npm test && npm run build",
-    "enable": "node scripts/enable-repo.ts"
+    "enable": "node scripts/enable-repo.ts",
+    "hub": "node scripts/hub.ts",
+    "setup-hub": "node scripts/setup-hub.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.295"
