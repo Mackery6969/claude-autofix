@@ -1,0 +1,32 @@
+name: Claude Code Quality
+run-name: "${{ fromJSON(inputs.hub || '{}').label || format('Run by {0} · {1}', github.actor, inputs.number && format('#{0}', inputs.number) || github.ref_name) }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      number:
+        description: Pull request number (optional; leave empty to work on the branch above)
+        required: false
+        default: ""
+      hub:
+        description: Leave empty (the hub fills this in)
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: claude-quality-${{ inputs.number || fromJSON(inputs.hub || '{}').pullRequest || fromJSON(inputs.hub || '{}').issue || fromJSON(inputs.hub || '{}').ref || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    uses: Mackery6969/Claude-Autofix/.github/workflows/run.yml@v3
+    with:
+      hub-url: https://claude-autofix-hub.davishayden32.workers.dev
+      task: quality
+      hub: ${{ inputs.hub }}
+      number: ${{ inputs.number }}
+      branch: ${{ github.ref_name }}
+      sender: ${{ !endsWith(github.actor, '[bot]') && github.actor || '' }}
