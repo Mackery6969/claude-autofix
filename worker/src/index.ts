@@ -398,7 +398,8 @@ class Hub {
       throw error;
     }
     const shared = `${this.env.ACTION_REPOSITORY}/${SHARED_WORKFLOW}@`.toLowerCase();
-    if (!claims.job_workflow_ref.toLowerCase().startsWith(shared)) return text(`Only ${this.env.ACTION_REPOSITORY}'s ${SHARED_WORKFLOW} gets credentials, not ${claims.job_workflow_ref}.`, 403);
+    const workflowRef = claims.job_workflow_ref.toLowerCase();
+    if (![`${shared}refs/tags/`, `${shared}refs/heads/`].some((prefix) => workflowRef.startsWith(prefix))) return text(`Only ${this.env.ACTION_REPOSITORY}'s ${SHARED_WORKFLOW} gets credentials, not ${claims.job_workflow_ref}.`, 403);
     if (claims.event_name !== "workflow_dispatch") return text("Claude Autofix only runs from workflow_dispatch.", 403);
     const task = request.task ?? "";
     if (!TASKS.has(task)) return text("Unknown task.", 400);
