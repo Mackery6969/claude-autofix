@@ -143,7 +143,11 @@ export function tail(text: string, lines: number): string {
     .join("\n");
 }
 
-function author(user: { login: string; type?: string } | null | undefined): string {
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function author(user:{ login: string; type?: string } | null | undefined): string {
   return user?.login ?? "ghost";
 }
 
@@ -382,7 +386,7 @@ Do not commit; the workflow commits your changes.`;
         plan.reopened = "I reopened this issue.";
         log(`Reopened #${thread.number}.`);
       } catch (error) {
-        warn(`Couldn't reopen #${thread.number}: ${error instanceof Error ? error.message : String(error)}`);
+        warn(`Couldn't reopen #${thread.number}: ${messageOf(error)}`);
       }
       return;
     }
@@ -393,7 +397,7 @@ Do not commit; the workflow commits your changes.`;
     try {
       await github.reopenPullRequest(thread.number);
     } catch (error) {
-      throw new ActionFailure(`Couldn't reopen #${thread.number}, so nothing was pushed: ${error instanceof Error ? error.message : String(error)}`);
+      throw new ActionFailure(`Couldn't reopen #${thread.number}, so nothing was pushed: ${messageOf(error)}`);
     }
     plan.reopened = `I reopened this pull request${pullRequest.deleted ? ` and restored its branch \`${pullRequest.branch}\`` : ""}.`;
     log(`Reopened #${thread.number}.`);
@@ -413,7 +417,7 @@ Do not commit; the workflow commits your changes.`;
     for (const [id, reply] of plan.replies) {
       await github.replyToReviewComment(plan.thread.number, id, reply).catch((error: unknown) => warn(`Couldn't reply in review thread ${id}: ${error instanceof Error ? error.message : String(error)}`));
     }
-    if (plan.reopenAsked) await this.reopen(plan).catch((error: unknown) => warn(`Couldn't reopen #${plan.thread.number}: ${error instanceof Error ? error.message : String(error)}`));
+    if (plan.reopenAsked) await this.reopen(plan).catch((error: unknown) => warn(`Couldn't reopen #${plan.thread.number}: ${messageOf(error)}`));
     const opened = pullUrl && (!plan.pullRequest || plan.pullRequest.merged) ? `\n\nI opened ${pullUrl} for this.` : "";
     const reopened = plan.reopened ? `\n\n${plan.reopened}` : "";
     const queued = await this.queueRequests(plan.requests);
