@@ -125,13 +125,7 @@ export class GitHub {
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const response = await fetch(`${this.#apiUrl}${path}`, {
       method,
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${this.#token}`,
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "claude-autofix",
-        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-      },
+      headers: { ...this.#headers(), ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!response.ok) {
@@ -203,7 +197,7 @@ export class GitHub {
 
   async jobLog(jobId: number): Promise<string> {
     const response = await fetch(`${this.#apiUrl}/repos/${this.repository}/actions/jobs/${jobId}/logs`, {
-      headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${this.#token}`, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "claude-autofix" },
+      headers: this.#headers(),
     });
     if (!response.ok) throw new GitHubError(`GET job ${jobId} logs failed (HTTP ${response.status})`, response.status);
     return response.text();
@@ -293,6 +287,10 @@ export class GitHub {
     const text = body.includes(marker) ? body : `${body}\n\n${marker}`;
     if (existing) await this.request("PATCH", `/repos/${this.repository}/issues/comments/${existing.id}`, { body: text });
     else await this.request("POST", `/repos/${this.repository}/issues/${number}/comments`, { body: text });
+  }
+
+  #headers(): Record<string, string> {
+    return { Accept: "application/vnd.github+json", Authorization: `Bearer ${this.#token}`, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "claude-autofix" };
   }
 
   private async paginate<T>(path: (page: number) => string, pages: number): Promise<T[]> {

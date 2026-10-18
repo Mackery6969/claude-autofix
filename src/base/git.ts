@@ -82,7 +82,7 @@ export function pushIfUnchanged(options: PushOptions): boolean {
 
 export function checkoutBranchAt(options: PushOptions & { sha: string }): void {
   const { cwd, branch, sha } = options;
-  if (git(["rev-parse", "HEAD"], { cwd }).trim() !== sha) {
+  if (currentCommit(cwd) !== sha) {
     git(["fetch", "--no-tags", remoteUrl(options), `+refs/heads/${branch}:refs/remotes/autofix/${branch}`], { cwd, env: authenticatedEnvironment(options) });
   }
   git(["checkout", "--quiet", "-B", branch, sha], { cwd });
