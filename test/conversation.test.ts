@@ -59,10 +59,11 @@ test("a mention brings Claude in at that comment; the rest of the thread is cont
   assert.ok(!mentions("me@claude-code-scanning", handle));
 });
 
-test("work requests only accept security sweeps and quality passes", () => {
-  assert.deepEqual(parseRequests('[{"task": "security"}, {"task": "quality", "branch": " feature-x "}, {"task": "deploy"}, "nope"]'), [
+test("work requests only accept security sweeps, quality passes and reopening the thread", () => {
+  assert.deepEqual(parseRequests('[{"task": "security"}, {"task": "quality", "branch": " feature-x "}, {"task": "reopen"}, {"task": "deploy"}, "nope"]'), [
     { task: "security", branch: "" },
     { task: "quality", branch: "feature-x" },
+    { task: "reopen", branch: "" },
   ]);
   assert.deepEqual(parseRequests('{"task": "security"}'), []);
 });
