@@ -53,7 +53,7 @@ export interface Helpers {
   [name: string]: string;
 }
 
-export type Delivery = { kind: "new-pull-request" } | { kind: "pull-request"; branch: string; base: string } | { kind: "push"; branch: string; pullRequest: number | undefined };
+export type Delivery = { kind: "new-pull-request"; base?: string } | { kind: "pull-request"; branch: string; base: string } | { kind: "push"; branch: string; pullRequest: number | undefined };
 
 export const DESCRIPTION_FILE = ".claude-pr.md";
 const TITLE_LIMIT = 72;
@@ -122,6 +122,8 @@ export abstract class ClaudeTask<Plan> {
   }
 
   protected async finished(_plan: Plan): Promise<void> {}
+
+  protected async beforeDelivery(_plan: Plan): Promise<void> {}
 
   protected async delivered(_plan: Plan, _pullUrl: string | undefined, _report: ClaudeReport): Promise<void> {}
 
@@ -254,6 +256,7 @@ export abstract class ClaudeTask<Plan> {
     commitAll(workspace, branch, text.commitMessage, this.settings.author);
     this.verify();
     discardUncommitted(workspace);
+    await this.beforeDelivery(plan);
 
     if (delivery.kind === "push") {
       await this.pushToBranch(delivery, text);
@@ -261,7 +264,7 @@ export abstract class ClaudeTask<Plan> {
       return "done";
     }
     forcePush({ ...this.pushOptions, branch });
-    const pull = await this.openPullRequest(branch, delivery.kind === "pull-request" ? delivery.base : await this.defaultBranch(), text);
+    const pull = await this.openPullRequest(branch, delivery.kind === "pull-request" ? delivery.base : (delivery.base ?? (await this.defaultBranch())), text);
     setOutput("pull-request-url", pull.html_url);
     setOutput("branch", branch);
     await this.delivered(plan, pull.html_url, report);

@@ -273,7 +273,12 @@ Every one of Claude's pull requests, and every issue it has opened or commented 
 - **On issues**, Claude replies, and if a maintainer asks for a change, it updates its open pull request for that issue or opens a new one that refers to it.
 - **Dismissing alerts:** a maintainer can tell Claude an alert is a false positive or not worth fixing (on a line the pull request changes, or by number or link, like "alert #244"), and Claude dismisses it on GitHub with a reason, listing it in its reply with a link to reopen it.
 - **Starting work:** ask, say, "@claude-code-scanning run a security sweep" or "do a quality pass on this branch", and Claude queues it with the hub; it starts within minutes.
-- **On closed or merged pull requests**, Claude still replies, but can't push; it says when something needs a new pull request.
+- **After closing or merging:** Claude keeps replying, and a maintainer can still ask for changes.
+  - On a closed pull request from the same repository, Claude restores its branch if it was deleted, reopens the pull request and pushes there.
+  - GitHub can't reopen a merged pull request, so changes asked for on one go into a follow-up pull request on its base branch; later requests there update that follow-up.
+  - On a closed issue, Claude reopens it when it makes changes for it.
+  - A maintainer can also just ask Claude to reopen a closed issue or pull request.
+  - A closed fork pull request only gets replies.
 - **Failed checks and new alerts** on Claude's open pull requests come back to it like comments: it reads the end of the failing job's log, or the alert, and pushes a fix.
 - **Usage limits:** if Claude can't answer because your usage limit has been reached, it says so in the thread, with when it'll answer, and answers then without you commenting again. It keeps that to one note per thread.
 - **It won't talk to itself forever.** Without a maintainer in between, Claude replies at most 3 times in a row, which covers a check it can't make pass and a stranger trying to run up your usage. Several comments left within a minute or two get one reply.

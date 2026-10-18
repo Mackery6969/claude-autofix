@@ -212,6 +212,28 @@ export class GitHub {
     return refs.map((ref) => ({ name: ref.ref.replace(/^refs\/heads\//, ""), sha: ref.object.sha }));
   }
 
+  async branch(name: string): Promise<Branch | undefined> {
+    try {
+      const ref = await this.request<{ object: { sha: string } }>("GET", `/repos/${this.repository}/git/ref/heads/${encodeRef(name)}`);
+      return { name, sha: ref.object.sha };
+    } catch (error) {
+      if (error instanceof GitHubError && error.status === 404) return undefined;
+      throw error;
+    }
+  }
+
+  async createBranch(name: string, sha: string): Promise<void> {
+    await this.request("POST", `/repos/${this.repository}/git/refs`, { ref: `refs/heads/${name}`, sha });
+  }
+
+  async reopenIssue(number: number): Promise<void> {
+    await this.request("PATCH", `/repos/${this.repository}/issues/${number}`, { state: "open" });
+  }
+
+  async reopenPullRequest(number: number): Promise<void> {
+    await this.request("PATCH", `/repos/${this.repository}/pulls/${number}`, { state: "open" });
+  }
+
   async deleteBranch(name: string): Promise<void> {
     await this.request("DELETE", `/repos/${this.repository}/git/refs/heads/${encodeRef(name)}`);
   }

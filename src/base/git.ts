@@ -80,10 +80,10 @@ export function pushIfUnchanged(options: PushOptions): boolean {
   throw new Error(`git push failed: ${result.stderr.trim()}`);
 }
 
-export function checkoutBranchAt(options: PushOptions & { sha: string }): void {
+export function checkoutBranchAt(options: PushOptions & { sha: string; from?: string }): void {
   const { cwd, branch, sha } = options;
   if (currentCommit(cwd) !== sha) {
-    git(["fetch", "--no-tags", remoteUrl(options), `+refs/heads/${branch}:refs/remotes/autofix/${branch}`], { cwd, env: authenticatedEnvironment(options) });
+    git(["fetch", "--no-tags", remoteUrl(options), `+${options.from ?? `refs/heads/${branch}`}:refs/remotes/autofix/${branch}`], { cwd, env: authenticatedEnvironment(options) });
   }
   git(["checkout", "--quiet", "-B", branch, sha], { cwd });
 }
