@@ -198,10 +198,11 @@ class Hub {
         seen.push(repository.full_name);
       }
     }
-    for (const record of await this.state.repositories()) {
+    for (const record of await this.state.listedRepositories()) {
       if (!seen.includes(record.repository)) await this.state.forgetRepository(record.repository);
       else if (record.workflow?.startsWith(FAILED)) await this.state.saveRepository({ ...record, workflow: undefined });
     }
+    await this.state.indexRepositories(seen);
     await this.state.synced(now);
     return seen;
   }
@@ -224,7 +225,10 @@ class Hub {
       return log;
     }
 
-    const due = dueJobs(await this.state.jobs(), now, DISPATCHES_PER_TICK);
+    const jobs = await this.state.jobsIfDue(now);
+    const due = dueJobs(jobs, now, DISPATCHES_PER_TICK);
+    const waiting = jobs.filter((job) => !due.includes(job));
+    if (waiting.length > 0) await this.state.expectJobAt(Math.min(...waiting.map((job) => job.due)));
     if (due.length === 0) return log;
     let runner: number | undefined;
     const runnerInstallation = async () => (runner ??= await this.app.installationFor(this.env.RUNNER_REPOSITORY));

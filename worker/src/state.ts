@@ -14,9 +14,13 @@ export interface Pause {
 }
 
 const PAUSE_KEY = "pause";
+const REPOSITORY_INDEX_KEY = "index:repositories";
+const NEXT_DUE_KEY = "next-due";
+const JOB_RECHECK_MS = 60 * 60_000;
 
 export class State {
   readonly #store: KeyValueStore;
+  #records: Map<string, RepositoryRecord> | undefined;
 
   constructor(store: KeyValueStore) {
     this.#store = store;
@@ -44,11 +48,24 @@ export class State {
     const merged = mergeJobs(existing, job);
     if (existing && JSON.stringify(existing) === JSON.stringify(merged)) return;
     await this.#store.put(key, JSON.stringify(merged), { metadata: merged });
+    await this.expectJobAt(merged.due);
   }
 
   async postpone(job: Job, due: number): Promise<void> {
     const postponed = { ...job, due };
     await this.#store.put(jobKey(job), JSON.stringify(postponed), { metadata: postponed });
+    await this.expectJobAt(due);
+  }
+
+  async expectJobAt(due: number): Promise<void> {
+    const next = await this.#store.get(NEXT_DUE_KEY);
+    if (next === null || due < Number(next)) await this.#store.put(NEXT_DUE_KEY, String(due));
+  }
+
+  async jobsIfDue(now: number): Promise<Job[]> {
+    if (Number((await this.#store.get(NEXT_DUE_KEY)) ?? 0) > now) return [];
+    await this.#store.put(NEXT_DUE_KEY, String(now + JOB_RECHECK_MS));
+    return this.jobs();
   }
 
   jobs(): Promise<Job[]> {
@@ -63,16 +80,42 @@ export class State {
     return this.#read<RepositoryRecord>(`repo:${name}`);
   }
 
-  repositories(): Promise<RepositoryRecord[]> {
+  async repositories(): Promise<RepositoryRecord[]> {
+    if (!this.#records) {
+      const names = await this.#read<string[]>(REPOSITORY_INDEX_KEY);
+      const records = names ? (await Promise.all(names.map((name) => this.repository(name)))).filter((record) => record !== undefined) : await this.listedRepositories();
+      if (!names) await this.indexRepositories(records.map((record) => record.repository));
+      this.#records = new Map(records.map((record) => [record.repository, record]));
+    }
+    return [...this.#records.values()];
+  }
+
+  listedRepositories(): Promise<RepositoryRecord[]> {
     return this.#listed<RepositoryRecord>("repo:");
+  }
+
+  async indexRepositories(names: string[]): Promise<void> {
+    await this.#store.put(REPOSITORY_INDEX_KEY, JSON.stringify(names));
+    this.#records = undefined;
+  }
+
+  async #updateIndex(change: (names: string[]) => string[]): Promise<void> {
+    const names = await this.#read<string[]>(REPOSITORY_INDEX_KEY);
+    if (!names) return;
+    const changed = change(names);
+    if (changed.length !== names.length) await this.#store.put(REPOSITORY_INDEX_KEY, JSON.stringify(changed));
   }
 
   async saveRepository(record: RepositoryRecord): Promise<void> {
     await this.#store.put(`repo:${record.repository}`, JSON.stringify(record), { metadata: record });
+    if (!this.#records?.has(record.repository)) await this.#updateIndex((names) => (names.includes(record.repository) ? names : [...names, record.repository]));
+    this.#records?.set(record.repository, record);
   }
 
   async forgetRepository(name: string): Promise<void> {
     await this.#store.delete(`repo:${name}`);
+    await this.#updateIndex((names) => names.filter((indexed) => indexed !== name));
+    this.#records?.delete(name);
     await this.#store.delete(`cursor:${name}`);
     await this.#store.delete(`settings:${name}`);
     for (const task of ["scan", "quality"]) await this.#store.delete(`cursor:${name}|${task}`);

@@ -222,9 +222,45 @@ test("queueing the same work twice doesn't write again", async () => {
   const counting: KeyValueStore = { ...store, put: async (key, value, options) => (writes++, store.put(key, value, options)) };
   const state = new State(counting);
   await state.enqueue(job());
+  const afterFirst = writes;
   await state.enqueue(job());
-  assert.equal(writes, 1);
+  assert.equal(writes, afterFirst);
   assert.equal((await state.jobs()).length, 1);
+});
+
+function countingLists(store: KeyValueStore): { store: KeyValueStore; lists: () => number } {
+  let lists = 0;
+  return { store: { ...store, list: async (options) => (lists++, store.list(options)) }, lists: () => lists };
+}
+
+test("ticks only list the queue once something could be due, and at least hourly", async () => {
+  const { store, lists } = countingLists(memoryStore());
+  await new State(store).enqueue(job({ due: now + 10 * 60_000 }));
+  assert.deepEqual(await new State(store).jobsIfDue(now), []);
+  assert.equal(lists(), 0);
+  assert.equal((await new State(store).jobsIfDue(now + 10 * 60_000)).length, 1);
+  assert.equal(lists(), 1);
+  await new State(store).finish(job());
+  assert.deepEqual(await new State(store).jobsIfDue(now + 20 * 60_000), []);
+  assert.equal(lists(), 1);
+  await new State(store).jobsIfDue(now + 70 * 60_000);
+  assert.equal(lists(), 2);
+  await new State(store).enqueue(job({ due: now + 71 * 60_000 }));
+  assert.equal((await new State(store).jobsIfDue(now + 71 * 60_000)).length, 1);
+});
+
+test("repositories come from an index, so ticks don't list them", async () => {
+  const { store, lists } = countingLists(memoryStore());
+  await new State(store).saveRepository(newRecord("a/one", 1, "main", now));
+  assert.deepEqual((await new State(store).repositories()).map((record) => record.repository), ["a/one"]);
+  assert.equal(lists(), 1);
+  const state = new State(store);
+  await state.saveRepository(newRecord("a/two", 1, "main", now));
+  await state.forgetRepository("a/one");
+  const beforeTicks = lists();
+  assert.deepEqual((await new State(store).repositories()).map((record) => record.repository), ["a/two"]);
+  await new State(store).repositories();
+  assert.equal(lists(), beforeTicks);
 });
 
 test("a usage-limit pause only ever moves later", async () => {
