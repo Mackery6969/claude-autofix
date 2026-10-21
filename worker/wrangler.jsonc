@@ -2,6 +2,7 @@
   "name": "claude-autofix-hub",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
+  "d1_databases": [{ "binding": "DB", "database_name": "claude-autofix-hub" }],
   "kv_namespaces": [{ "binding": "STATE" }],
   "triggers": { "crons": ["*/5 * * * *"] },
   "observability": { "enabled": true },

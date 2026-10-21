@@ -34,7 +34,7 @@ export function must(command: string, args: string[], failure: string, input?: s
 }
 
 const TOKEN_HELP = `The Cloudflare API token can't manage Workers on this account. Edit it under My Profile → API Tokens (or make one from the "Edit Cloudflare Workers" template) with:
-  Account → Workers Scripts → Edit, Workers KV Storage → Edit, Account Settings → Read
+  Account → Workers Scripts → Edit, Workers KV Storage → Edit, D1 → Edit, Account Settings → Read
   User → Memberships → Read, User Details → Read
   Account Resources → Include → the account in CLOUDFLARE_ACCOUNT_ID
 then update the CLOUDFLARE_API_TOKEN secret and run Deploy hub again.`;

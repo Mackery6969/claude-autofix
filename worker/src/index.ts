@@ -5,11 +5,13 @@ import { WAITING_MARKER, waitingNote } from "../../src/base/notes.ts";
 import { dueJobs, newRecord, scheduledWork, type RepositoryRecord } from "./schedule.ts";
 import { GITHUB_SIGNATURE_HEADER, REPORT_SIGNATURE_HEADER, verifySignature } from "./signatures.ts";
 import { State, type KeyValueStore } from "./state.ts";
+import { DatabaseStore, type Database } from "./database.ts";
 import { reportKey, TokenError, verifyActionsToken } from "./oidc.ts";
 import { contentHash, dispatchLabel, gitBlobSha, SHARED_WORKFLOW, TASK_WORKFLOWS, WORKFLOW_DIRECTORY, WORKFLOW_INPUT, workflowFiles, type DispatchedJob } from "./workflow.ts";
 
 export interface Env {
-  STATE: KeyValueStore;
+  DB: Database;
+  STATE?: KeyValueStore;
   APP_CLIENT_ID: string;
   APP_SLUG: string;
   RUNNER_REPOSITORY: string;
@@ -70,7 +72,7 @@ class Hub {
 
   constructor(env: Env) {
     this.env = env;
-    this.state = new State(env.STATE);
+    this.state = new State(new DatabaseStore(env.DB, env.STATE));
     this.app = new GitHubApp({ clientId: env.APP_CLIENT_ID, privateKey: env.GITHUB_APP_PRIVATE_KEY });
   }
 
