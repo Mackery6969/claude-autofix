@@ -60,6 +60,10 @@ const TITLE_LIMIT = 72;
 const SLUG_LIMIT = 50;
 const COMMIT_BODY_LIMIT = 4000;
 
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function commentMarker(task: string): string {
   return `<!-- claude-autofix:${task} -->`;
 }
@@ -221,7 +225,7 @@ export abstract class ClaudeTask<Plan> {
         if ((await this.runUnit(plan)) === "paused") return;
       } catch (error) {
         if (plans.length === 1) throw error;
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         failures.push(`${this.describe(plan)}: ${message.split("\n")[0]}`);
         warn(`Group ${index + 1} (${this.describe(plan)}) failed and was skipped: ${message}`);
       } finally {
@@ -293,7 +297,7 @@ export abstract class ClaudeTask<Plan> {
         log(`Deleted ${candidate.name}: its pull request (#${latest.number}) was ${latest.merged_at ? "merged" : "closed"}.`);
       }
     } catch (error) {
-      warn(`Couldn't clean up closed branches: ${error instanceof Error ? error.message : String(error)}`);
+      warn(`Couldn't clean up closed branches: ${errorMessage(error)}`);
     }
   }
 
@@ -382,7 +386,7 @@ export abstract class ClaudeTask<Plan> {
       const pull = existing
         ? await github.updatePullRequest(existing.number, { title: text.title, body: text.body })
         : await github.createPullRequest({ title: text.title, head: branch, base, body: text.body });
-      await github.addLabels(pull.number, labels).catch((error: unknown) => warn(`Couldn't add labels: ${error instanceof Error ? error.message : String(error)}`));
+      await github.addLabels(pull.number, labels).catch((error: unknown) => warn(`Couldn't add labels: ${errorMessage(error)}`));
       return pull;
     } catch (error) {
       if (error instanceof GitHubError && error.status === 403) {

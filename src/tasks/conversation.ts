@@ -7,8 +7,8 @@ import { checkoutBranchAt } from "../base/git.ts";
 import type { Comment, Review, ReviewComment, Thread } from "../base/github.ts";
 import type { PathRules } from "../base/paths.ts";
 import { changedLines, touchesChangedLines } from "../base/pulls.ts";
-import { ClaudeTask, commitMessage, type ClaudeReport, type Delivery, type Helpers, type PullRequestText, type TaskSettings } from "../base/task.ts";
-import { ALERTS_FILE, dismissalInstructions, dismissAlerts, dismissalsSection, DISMISSALS_FILE, fromScanners, readDismissals, toAlert, writeAlertsFile, type Alert, type Dismissal, type ScannerFilter } from "./alerts.ts";
+import { ClaudeTask, commitMessage, errorMessage, type ClaudeReport, type Delivery, type Helpers, type PullRequestText, type TaskSettings } from "../base/task.ts";
+import { ALERTS_FILE, alertKey, dismissalInstructions, dismissAlerts, dismissalsSection, DISMISSALS_FILE, fromScanners, readDismissals, toAlert, writeAlertsFile, type Alert, type Dismissal, type ScannerFilter } from "./alerts.ts";
 import { handledMarker, keysInMarker } from "./markers.ts";
 
 export const REPLY_MARKER = "<!-- claude-autofix:reply -->";
@@ -239,16 +239,16 @@ export class ConversationTask extends ClaudeTask<ConversationPlan> {
     try {
       for (const job of await github.failedJobs(pull.sha)) {
         if (since && job.completedAt && job.completedAt <= since) continue;
-        const logText = await github.jobLog(job.id).catch((error: unknown) => `(couldn't read the log: ${error instanceof Error ? error.message : String(error)})`);
+        const logText = await github.jobLog(job.id).catch((error: unknown) => `(couldn't read the log: ${errorMessage(error)})`);
         feedback.push(`### Check failed: ${job.workflow} / ${job.name}\n\n${job.url}\n\nLast ${LOG_LINES} lines of its log:\n\n\`\`\`\n${tail(logText, LOG_LINES)}\n\`\`\``);
       }
     } catch (error) {
-      warn(`Couldn't read the checks on #${number}: ${error instanceof Error ? error.message : String(error)}`);
+      warn(`Couldn't read the checks on #${number}: ${errorMessage(error)}`);
     }
     const changed = changedLines(await github.pullRequestFiles(number));
     const alerts = fromScanners(await github.openAlerts(`refs/pull/${number}/merge`), this.#options.scanners).filter((alert) => touchesChangedLines(changed, alert.path, alert.startLine, alert.endLine));
     const answered = new Set((await github.comments(number)).flatMap((comment) => (author(comment.user).toLowerCase() === this.settings.author.name.toLowerCase() ? keysInMarker(comment.body ?? "") : [])));
-    for (const alert of alerts.filter((candidate) => !answered.has(`alert-${candidate.number}`))) {
+    for (const alert of alerts.filter((candidate) => !answered.has(alertKey(candidate)))) {
       feedback.push(`### Code scanning alert #${alert.number} on a line this pull request changes\n\n${alert.tool} \`${alert.rule}\` (${alert.severity}) at \`${alert.path}:${alert.startLine}\`: ${alert.message}`);
     }
     return feedback;
@@ -261,7 +261,7 @@ export class ConversationTask extends ClaudeTask<ConversationPlan> {
 
   protected async paused(plan: ConversationPlan, resumeAt: Date): Promise<void> {
     if (plan.isAutomatic) return;
-    await this.settings.github.upsertComment(plan.thread.number, WAITING_MARKER, waitingNote(resumeAt)).catch((error: unknown) => warn(`Couldn't say in #${plan.thread.number} that Claude is waiting: ${error instanceof Error ? error.message : String(error)}`));
+    await this.settings.github.upsertComment(plan.thread.number, WAITING_MARKER, waitingNote(resumeAt)).catch((error: unknown) => warn(`Couldn't say in #${plan.thread.number} that Claude is waiting: ${errorMessage(error)}`));
   }
 
   protected describe(plan: ConversationPlan): string {
@@ -382,7 +382,7 @@ Do not commit; the workflow commits your changes.`;
         plan.reopened = "I reopened this issue.";
         log(`Reopened #${thread.number}.`);
       } catch (error) {
-        warn(`Couldn't reopen #${thread.number}: ${error instanceof Error ? error.message : String(error)}`);
+        warn(`Couldn't reopen #${thread.number}: ${errorMessage(error)}`);
       }
       return;
     }
@@ -393,7 +393,7 @@ Do not commit; the workflow commits your changes.`;
     try {
       await github.reopenPullRequest(thread.number);
     } catch (error) {
-      throw new ActionFailure(`Couldn't reopen #${thread.number}, so nothing was pushed: ${error instanceof Error ? error.message : String(error)}`);
+      throw new ActionFailure(`Couldn't reopen #${thread.number}, so nothing was pushed: ${errorMessage(error)}`);
     }
     plan.reopened = `I reopened this pull request${pullRequest.deleted ? ` and restored its branch \`${pullRequest.branch}\`` : ""}.`;
     log(`Reopened #${thread.number}.`);
@@ -411,9 +411,9 @@ Do not commit; the workflow commits your changes.`;
   protected async delivered(plan: ConversationPlan, pullUrl: string | undefined, report: ClaudeReport): Promise<void> {
     const { github } = this.settings;
     for (const [id, reply] of plan.replies) {
-      await github.replyToReviewComment(plan.thread.number, id, reply).catch((error: unknown) => warn(`Couldn't reply in review thread ${id}: ${error instanceof Error ? error.message : String(error)}`));
+      await github.replyToReviewComment(plan.thread.number, id, reply).catch((error: unknown) => warn(`Couldn't reply in review thread ${id}: ${errorMessage(error)}`));
     }
-    if (plan.reopenAsked) await this.reopen(plan).catch((error: unknown) => warn(`Couldn't reopen #${plan.thread.number}: ${error instanceof Error ? error.message : String(error)}`));
+    if (plan.reopenAsked) await this.reopen(plan).catch((error: unknown) => warn(`Couldn't reopen #${plan.thread.number}: ${errorMessage(error)}`));
     const opened = pullUrl && (!plan.pullRequest || plan.pullRequest.merged) ? `\n\nI opened ${pullUrl} for this.` : "";
     const reopened = plan.reopened ? `\n\n${plan.reopened}` : "";
     const queued = await this.queueRequests(plan.requests);
@@ -436,7 +436,7 @@ Do not commit; the workflow commits your changes.`;
         await reportToHub(hub, { kind: "queue", task: request.task, ref });
         lines.push(`- Queued a ${name} on \`${ref}\`; it starts within a few minutes.`);
       } catch (error) {
-        lines.push(`- Couldn't queue a ${name} on \`${ref}\`: ${error instanceof Error ? error.message : String(error)}`);
+        lines.push(`- Couldn't queue a ${name} on \`${ref}\`: ${errorMessage(error)}`);
       }
     }
     return `\n\n${lines.join("\n")}`;

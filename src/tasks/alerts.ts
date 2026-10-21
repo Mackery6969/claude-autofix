@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { log, summary, warn } from "../base/actions.ts";
 import type { CodeScanningAlert, GitHub } from "../base/github.ts";
+import { errorMessage } from "../base/task.ts";
 
 export const ALERTS_FILE = "code-scanning-alerts.json";
 export const DISMISSALS_FILE = ".claude-dismissals.json";
@@ -121,7 +122,7 @@ export async function dismissAlerts(github: GitHub, dismissals: Dismissal[]): Pr
       dismissed.push(dismissal);
       log(`Dismissed alert #${dismissal.alert} (${dismissal.reason}).`);
     } catch (error) {
-      warn(`Couldn't dismiss alert #${dismissal.alert}: ${error instanceof Error ? error.message : String(error)}`);
+      warn(`Couldn't dismiss alert #${dismissal.alert}: ${errorMessage(error)}`);
     }
   }
   if (dismissed.length) summary(`Dismissed ${dismissed.length} alert${dismissed.length === 1 ? "" : "s"} on GitHub.`);
