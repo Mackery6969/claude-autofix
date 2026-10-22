@@ -122,13 +122,13 @@ Optionally, write down your rules: Claude reads each repository's `CLAUDE.md`, a
 | An issue is opened, labelled or reopened | A security sweep for `security` and `critical` issues, a fix sweep for the rest. |
 | You push, with `scan-on-push` on | A scan of what the push changed, a couple of minutes later so quick pushes share one scan. |
 | A Dependabot alert opens | A security sweep after an hour, giving Dependabot time to open its own pull request. |
-| You open a pull request, or mark one ready | A code-quality pass over what it changes. Marking a draft ready (or reopening) also starts a security pass, for the alerts that appeared while it was a draft. |
+| You open a pull request, drafts included | A code-quality pass over what it changes. Reopening one also starts a security pass, for the alerts that appeared while it was closed. |
 | Someone comments on, or reviews, one of Claude's pull requests, comments on an issue Claude has taken part in, or mentions the app anywhere | A conversation: Claude replies, and changes what a maintainer asks for. See [Conversations](#conversations). |
 | A check fails on one of Claude's pull requests, or a scan finds a new alert on a line it changed | A conversation: Claude reads the failing job's log or the alert and pushes a fix. |
 | One of Claude's pull requests is closed | The hub deletes its branch. |
 | On each repository's schedule | A security sweep and a fix sweep (every 6 hours), a scanning lap and a code-quality batch (every week), spread out per repository. |
 
-Draft pull requests are left alone: code scanning still runs on them, but Claude doesn't change a branch you're still working on. Mark it ready and both passes run.
+Draft pull requests are treated like any other: Claude reviews and fixes them as soon as they're opened, so marking one ready doesn't start another pass.
 
 Nothing Claude does starts Claude again: the hub ignores comments and events the app caused. The one exception is a failed check on its own pull request, which it gets to fix, up to 3 times in a row.
 
@@ -227,7 +227,7 @@ Every Dependabot alert in a group ends up fixed in a pull request, dismissed, or
 
 Actions used with a tag (`uses: actions/checkout@v7`) get flagged because a tag can be moved. Claude can't look up commit SHAs, so the action pins these itself: it asks GitHub which commit the tag points to and rewrites the line as `uses: actions/checkout@<sha> # v7`. The comment keeps the version readable and lets Dependabot keep the pin current. This costs no Claude usage.
 
-**On pull requests and branches**, only alerts on lines that differ from the base count: a pull request's base branch, or the default branch for a branch (after a scanner runs on a push to it, or `node scripts/hub.ts run owner/repo security <branch>`). A branch with an open pull request is treated as that pull request. On a pull request these are the same alerts GitHub comments on. If the pull request is from a branch in this repository, opened by someone in `pull-request-authors` (by default, you), and isn't a draft, Claude fixes them and pushes the fix to the pull request's branch (or opens a separate pull request into it, with `pull-request-mode: pull-request`), with one summary comment it keeps up to date. Everyone else's pull requests are left alone; GitHub already shows code scanning results on them.
+**On pull requests and branches**, only alerts on lines that differ from the base count: a pull request's base branch, or the default branch for a branch (after a scanner runs on a push to it, or `node scripts/hub.ts run owner/repo security <branch>`). A branch with an open pull request is treated as that pull request. On a pull request these are the same alerts GitHub comments on. If the pull request is from a branch in this repository, opened by someone in `pull-request-authors` (by default, you), Claude fixes them, drafts included, and pushes the fix to the pull request's branch (or opens a separate pull request into it, with `pull-request-mode: pull-request`), with one summary comment it keeps up to date. Everyone else's pull requests are left alone; GitHub already shows code scanning results on them.
 
 ### Scanning
 
@@ -259,9 +259,9 @@ A huge repository simply takes more weeks to get through. To go faster, raise `b
 
 - pull requests from branches in the same repository (never forks),
 - opened by someone in `pull-request-authors` (by default, the repository owner), so collaborators' pull requests don't spend your usage,
-- that aren't drafts or opened by bots, and whose latest commit isn't already Claude's.
+- that aren't opened by bots (drafts are included), and whose latest commit isn't already Claude's.
 
-It never force-pushes your branch: if you pushed while Claude was working, it stops and leaves your commits alone. It runs once when a pull request is opened, reopened or marked ready, not on every push.
+It never force-pushes your branch: if you pushed while Claude was working, it stops and leaves your commits alone. It runs once when a pull request is opened or reopened, not on every push.
 
 ### Conversations
 

@@ -64,8 +64,7 @@ const ALERT_ACTIONS = new Set(["created", "reopened", "appeared_in_branch"]);
 const SECURITY_ISSUE_LABELS = new Set(["security", "critical"]);
 const ISSUE_ACTIONS = new Set(["opened", "labeled", "reopened"]);
 const DEPENDABOT_ACTIONS = new Set(["created", "reopened", "auto_reopened"]);
-const QUALITY_PULL_ACTIONS = new Set(["opened", "reopened", "ready_for_review"]);
-const SECURITY_PULL_ACTIONS = new Set(["reopened", "ready_for_review"]);
+const QUALITY_PULL_ACTIONS = new Set(["opened", "reopened"]);
 
 export function jobKey(job: Pick<Job, "repository" | "task" | "ref" | "pullRequest" | "issue">): string {
   return `job:${job.repository}|${job.task}|${job.pullRequest ? `pr-${job.pullRequest}` : job.issue ? `issue-${job.issue}` : job.ref}`;
@@ -117,9 +116,9 @@ export function effectsOf(event: string, payload: WebhookPayload, context: Routi
       return ownRepository && isClaudeBranch(pull.head.ref) ? [known, { kind: "delete-branch", repository: repository.full_name, installation, branch: pull.head.ref, sha: pull.head.sha }] : [known];
     }
     const summoned = !bySelf && (payload.action === "opened" || payload.action === "edited") && mentions(pull.body, context.appSlug) ? [job("conversation", "", CONVERSATION_SETTLE_MS, { pullRequest: pull.number, mentioned: true, sender: payload.sender?.login ?? "" })] : [];
-    if (bySelf || !QUALITY_PULL_ACTIONS.has(payload.action ?? "") || pull.draft || !ownRepository || isClaudeBranch(pull.head.ref) || pull.user.type === "Bot") return [known, ...summoned];
+    if (bySelf || !QUALITY_PULL_ACTIONS.has(payload.action ?? "") || !ownRepository || isClaudeBranch(pull.head.ref) || pull.user.type === "Bot") return [known, ...summoned];
     const changes = { sha: pull.head.sha, pullRequest: pull.number, sender: pull.user.login };
-    const security = SECURITY_PULL_ACTIONS.has(payload.action ?? "") ? [job("security", pull.head.ref, ALERT_SETTLE_MS, changes)] : [];
+    const security = payload.action === "reopened" ? [job("security", pull.head.ref, ALERT_SETTLE_MS, changes)] : [];
     return [known, job("quality", pull.head.ref, 0, changes), ...security, ...summoned];
   }
   if (bySelf) return [known];

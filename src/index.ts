@@ -65,7 +65,7 @@ async function changeSetFor(github: GitHub, job: HubJob): Promise<ChangeSet | un
   const [open] = await github.pullRequests(job.ref, "open", 1);
   if (open) return changeSetFromPullRequest(await github.pullRequest(open.number), github.repository);
   const sha = job.sha || (await github.commitSha(github.repository, job.ref));
-  return { pullRequest: undefined, branch: job.ref, sha, base, author: { login: job.sender, type: "User" }, draft: false, fromFork: false };
+  return { pullRequest: undefined, branch: job.ref, sha, base, author: { login: job.sender, type: "User" }, fromFork: false };
 }
 
 async function main(): Promise<void> {

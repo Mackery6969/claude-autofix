@@ -37,15 +37,13 @@ const branch = (overrides: Partial<ChangeSet> = {}): ChangeSet => ({
   sha: "def",
   base: "main",
   author: { login: "Mackery6969", type: "User" },
-  draft: false,
   fromFork: false,
   ...overrides,
 });
 
-test("only your own, non-draft, same-repository pull requests are eligible", () => {
+test("only your own, same-repository pull requests are eligible", () => {
   assert.equal(eligibility({}, ["mackery6969"]), undefined);
   assert.match(eligibility({ head: { ref: "x", sha: "abc", repo: { full_name: "stranger/repo" } } }) ?? "", /fork/);
-  assert.match(eligibility({ draft: true }) ?? "", /draft/);
   assert.match(eligibility({ user: { login: "dependabot[bot]", type: "Bot" } }) ?? "", /bot/);
   assert.match(eligibility({ head: { ref: "claude/security-fixes", sha: "abc", repo: { full_name: "Mackery6969/repo" } } }) ?? "", /bot/);
   assert.match(eligibility({ user: { login: "collaborator", type: "User" } }) ?? "", /pull-request-authors/);
