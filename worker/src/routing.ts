@@ -97,7 +97,8 @@ export function effectsOf(event: string, payload: WebhookPayload, context: Routi
   const repository = payload.repository;
   if (!repository || isIgnored(repository.full_name, context.ignored) || repository.archived) return [];
   const known: Effect = { kind: "register", installation, repositories: [{ repository: repository.full_name, defaultBranch: repository.default_branch }] };
-  const bySelf = payload.sender?.login.toLowerCase() === `${context.appSlug}[bot]`.toLowerCase();
+  const isSelf = (actor: Actor | undefined) => actor?.login.toLowerCase() === `${context.appSlug}[bot]`.toLowerCase();
+  const bySelf = isSelf(payload.sender);
   const job = (task: Task, ref: string, settle: number, extra: Partial<Job> = {}): Effect => ({
     kind: "enqueue",
     job: { repository: repository.full_name, installation, task, ref, sha: "", pullRequest: undefined, sender: "", due: context.now + settle, ...extra },
@@ -113,7 +114,7 @@ export function effectsOf(event: string, payload: WebhookPayload, context: Routi
     const pull = payload.pull_request;
     const ownRepository = pull.head.repo?.full_name === repository.full_name;
     if (payload.action === "closed") {
-      return ownRepository && isClaudeBranch(pull.head.ref) ? [known, { kind: "delete-branch", repository: repository.full_name, installation, branch: pull.head.ref, sha: pull.head.sha }] : [known];
+      return ownRepository && isSelf(pull.user) && isClaudeBranch(pull.head.ref) ? [known, { kind: "delete-branch", repository: repository.full_name, installation, branch: pull.head.ref, sha: pull.head.sha }] : [known];
     }
     const summoned = !bySelf && (payload.action === "opened" || payload.action === "edited") && mentions(pull.body, context.appSlug) ? [job("conversation", "", CONVERSATION_SETTLE_MS, { pullRequest: pull.number, mentioned: true, sender: payload.sender?.login ?? "" })] : [];
     if (bySelf || !QUALITY_PULL_ACTIONS.has(payload.action ?? "") || !ownRepository || isClaudeBranch(pull.head.ref) || pull.user.type === "Bot") return [known, ...summoned];
