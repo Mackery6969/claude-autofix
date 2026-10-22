@@ -106,6 +106,12 @@ test("conversations are dispatched ahead of security, and security ahead of qual
   assert.deepEqual(order.map((entry) => entry.task), ["conversation", "security", "quality"]);
 });
 
+test("pull requests from official Claude branches don't get a quality pass", () => {
+  const pull = { number: 10, user: { login: "Mackery6969", type: "User" }, head: { ref: "claude/hopeful-feynman-dv9xif", sha: "abc", repo: repository } };
+  for (const action of ["opened", "reopened"]) assert.deepEqual(enqueued("pull_request", payload({ action, pull_request: pull })), []);
+  assert.ok(enqueued("pull_request", payload({ action: "opened", pull_request: { ...pull, head: { ...pull.head, ref: "feature/login" } } })).some((entry) => entry.task === "quality"));
+});
+
 test("closing one of Claude's pull requests deletes its branch", () => {
   const effects = effectsOf("pull_request", payload({ action: "closed", pull_request: { number: 9, user: { login: "claude-autofix[bot]", type: "Bot" }, head: { ref: "claude/quality/tidy", sha: "abc", repo: repository } } }), context);
   assert.ok(effects.some((effect) => effect.kind === "delete-branch" && effect.branch === "claude/quality/tidy" && effect.sha === "abc"));
