@@ -111,6 +111,13 @@ test("closing one of Claude's pull requests deletes its branch", () => {
   assert.ok(effects.some((effect) => effect.kind === "delete-branch" && effect.branch === "claude/quality/tidy" && effect.sha === "abc"));
 });
 
+test("closing a claude/ pull request another app or person opened leaves its branch alone", () => {
+  for (const user of [{ login: "claude[bot]", type: "Bot" }, { login: "someone", type: "User" }]) {
+    const effects = effectsOf("pull_request", payload({ action: "closed", pull_request: { number: 9, user, head: { ref: "claude/hopeful-feynman-dv9xif", sha: "abc", repo: repository } } }), context);
+    assert.ok(!effects.some((effect) => effect.kind === "delete-branch"));
+  }
+});
+
 test("the app's own events, the runner and other installations' events don't queue work", () => {
   assert.deepEqual(enqueued("issues", payload({ action: "opened", sender: { login: "Claude-Autofix[bot]", type: "Bot" } })), []);
   assert.deepEqual(effectsOf("issues", payload({ action: "opened", repository: { full_name: "Mackery6969/claude-autofix-runner", default_branch: "main" } }), context), []);
