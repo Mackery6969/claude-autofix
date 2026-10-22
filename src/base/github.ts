@@ -243,7 +243,7 @@ export class GitHub {
     return issues.filter((issue) => !issue.pull_request);
   }
 
-  pullRequest(number: number): Promise<PullRequest & { draft?: boolean; user: { login: string; type: string }; base: { ref: string } }> {
+  pullRequest(number: number): Promise<PullRequest & { user: { login: string; type: string }; base: { ref: string } }> {
     return this.request("GET", `/repos/${this.repository}/pulls/${number}`);
   }
 

@@ -2,7 +2,6 @@ import type { GitHub, PullRequestFile } from "./github.ts";
 
 export interface PullRequestEvent {
   number: number;
-  draft?: boolean;
   user: { login: string; type: string };
   head: { ref: string; sha: string; repo: { full_name: string } | null };
   base: { ref: string };
@@ -14,7 +13,6 @@ export interface ChangeSet {
   sha: string;
   base: string;
   author: { login: string; type: string };
-  draft: boolean;
   fromFork: boolean;
 }
 
@@ -27,7 +25,6 @@ export function changeSetFromPullRequest(pull: PullRequestEvent, repository: str
     sha: pull.head.sha,
     base: pull.base.ref,
     author: pull.user,
-    draft: Boolean(pull.draft),
     fromFork: pull.head.repo?.full_name !== repository,
   };
 }
@@ -46,7 +43,6 @@ export async function filesChanged(github: GitHub, changes: ChangeSet): Promise<
 
 export function whyNotEligible(changes: ChangeSet, authors: string[]): string | undefined {
   if (changes.fromFork) return "it comes from a fork";
-  if (changes.draft) return "it's a draft";
   if (changes.author.type === "Bot" || changes.branch.startsWith("claude/")) return "it was made by a bot";
   if (!authors.some((author) => author.toLowerCase() === changes.author.login.toLowerCase())) return `only changes by ${authors.join(", ")} are handled (pull-request-authors)`;
   return undefined;
