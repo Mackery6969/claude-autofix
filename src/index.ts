@@ -154,7 +154,7 @@ function securityTask(settings: TaskSettings, scope: SecurityScope): SecurityTas
 function conversationTask(settings: TaskSettings, job: HubJob, commitType: string): ConversationTask {
   const thread = job.pullRequest ?? job.issue;
   if (!thread) throw new ActionFailure("A conversation needs a pull-request or issue number.");
-  const prefixes = [CLAUDE_TASKS.security.branchPrefix, CLAUDE_TASKS.quality.branchPrefix, input("branch-prefix")].filter(Boolean).map((prefix) => prefix.replace(/\/+$/, ""));
+  const prefixes = [...Object.values(CLAUDE_TASKS).map((defaults) => defaults.branchPrefix), input("branch-prefix")].filter(Boolean).map((prefix) => prefix.replace(/\/+$/, ""));
   return new ConversationTask(settings, {
     thread,
     pullRequestAuthors: multilineInput("pull-request-authors"),
