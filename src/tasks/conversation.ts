@@ -128,11 +128,16 @@ export function transcript(thread: Thread, entries: ThreadEntry[], fresh: Thread
     const where = entry.path ? ` on \`${entry.path}${entry.line ? `:${entry.line}` : ""}\`` : "";
     const reply = entry.kind === "review-comment" ? ` (review comment id ${entry.replyTo ?? entry.id})` : "";
     lines.push(`## ${entry.kind} by @${entry.author} (${flags}) at ${entry.at}${where}${reply}`, "");
-    if (entry.hunk) lines.push("```diff", entry.hunk, "```", "");
+    if (entry.hunk) lines.push(`${fence(entry.hunk)}diff`, entry.hunk, fence(entry.hunk), "");
     lines.push((entry.body.trim() || "(no text)").replace(/^/gm, "> "), "");
   }
   if (automatic.length) lines.push("## Since your last reply (NEW, automatic)", "", ...automatic, "");
   return lines.join("\n");
+}
+
+function fence(text: string): string {
+  const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map((match) => match[0].length));
+  return "`".repeat(longest + 1);
 }
 
 export function tail(text: string, lines: number): string {
@@ -240,7 +245,8 @@ export class ConversationTask extends ClaudeTask<ConversationPlan> {
       for (const job of await github.failedJobs(pull.sha)) {
         if (since && job.completedAt && job.completedAt <= since) continue;
         const logText = await github.jobLog(job.id).catch((error: unknown) => `(couldn't read the log: ${errorMessage(error)})`);
-        feedback.push(`### Check failed: ${job.workflow} / ${job.name}\n\n${job.url}\n\nLast ${LOG_LINES} lines of its log:\n\n\`\`\`\n${tail(logText, LOG_LINES)}\n\`\`\``);
+        const lastLines = tail(logText, LOG_LINES);
+        feedback.push(`### Check failed: ${job.workflow} / ${job.name}\n\n${job.url}\n\nLast ${LOG_LINES} lines of its log:\n\n${fence(lastLines)}\n${lastLines}\n${fence(lastLines)}`);
       }
     } catch (error) {
       warn(`Couldn't read the checks on #${number}: ${errorMessage(error)}`);
