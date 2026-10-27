@@ -164,6 +164,15 @@ test("each repository's settings set its schedules, and a task that's off is nev
   assert.ok(!scheduledWork(record, now + 30 * week, settings).jobs.some((entry) => entry.task === "fix" || entry.task === "quality"));
 });
 
+test("schedules that come due during a usage-limit pause are skipped, not saved up for when it lifts", () => {
+  const defaults = hubSettings(new Map());
+  const record = { repository: "Mackery6969/game", installation: 7, defaultBranch: "main", last: { security: now - 6 * hour, fix: now - 6 * hour, scan: now - week, quality: now - week } };
+  const paused = scheduledWork(record, now, defaults, true);
+  assert.deepEqual(paused.jobs, []);
+  assert.deepEqual(paused.record.last, { security: now, fix: now, scan: now, quality: now });
+  assert.deepEqual(scheduledWork(paused.record, now + hour, defaults).jobs, []);
+});
+
 test("records from before per-task schedules keep their last security sweep and quality pass", () => {
   const legacy = { repository: "Mackery6969/game", installation: 7, defaultBranch: "main", lastSecurity: now - hour, lastQuality: now - hour };
   const work = scheduledWork(legacy, now, hubSettings(new Map()));
@@ -274,6 +283,24 @@ test("repositories come from an index, so ticks don't list them", async () => {
   assert.deepEqual((await new State(store).repositories()).map((record) => record.repository), ["a/two"]);
   await new State(store).repositories();
   assert.equal(lists(), beforeTicks);
+});
+
+test("unchanged settings aren't written again", async () => {
+  let writes = 0;
+  const store = memoryStore();
+  const state = new State({ ...store, put: async (key, value, options) => (writes++, store.put(key, value, options)) });
+  await state.saveSettings("Mackery6969/game", hubSettings(new Map()));
+  await state.saveSettings("Mackery6969/game", hubSettings(new Map()));
+  assert.equal(writes, 1);
+  await state.saveSettings("Mackery6969/game", hubSettings(parseConfig("tasks: [security]\n")));
+  assert.equal(writes, 2);
+});
+
+test("scheduled work is only dispatched straight away when nothing is queued for it already", async () => {
+  const state = new State(memoryStore());
+  assert.ok(!(await state.isQueued(job())));
+  await state.enqueue(job({ due: now + hour }));
+  assert.ok(await state.isQueued(job()));
 });
 
 test("a usage-limit pause only ever moves later", async () => {

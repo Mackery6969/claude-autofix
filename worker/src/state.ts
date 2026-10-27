@@ -72,6 +72,10 @@ export class State {
     return this.#listed<Job>("job:");
   }
 
+  async isQueued(job: Job): Promise<boolean> {
+    return (await this.#store.get(jobKey(job))) !== null;
+  }
+
   async finish(job: Job): Promise<void> {
     await this.#store.delete(jobKey(job));
   }
@@ -174,6 +178,8 @@ export class State {
   }
 
   async saveSettings(repository: string, settings: HubSettings): Promise<void> {
-    await this.#store.put(`settings:${repository}`, JSON.stringify(settings));
+    const key = `settings:${repository}`;
+    const value = JSON.stringify(settings);
+    if ((await this.#store.get(key)) !== value) await this.#store.put(key, value);
   }
 }
