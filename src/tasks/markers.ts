@@ -1,11 +1,11 @@
-const MARKER = /<!-- (?:semgrep-findings|claude-handled): ([^>]*?) -->/;
+const MARKER = /<!-- (?:semgrep-findings|claude-handled): ([^>]*?) -->/g;
 
 export function handledMarker(keys: string[]): string {
   return `<!-- claude-handled: ${[...new Set(keys)].join(" ")} -->`;
 }
 
 export function keysInMarker(body: string): string[] {
-  return MARKER.exec(body)?.[1]?.split(/\s+/).filter(Boolean) ?? [];
+  return [...body.matchAll(MARKER)].at(-1)?.[1]?.split(/\s+/).filter(Boolean) ?? [];
 }
 
 export const RETRY_AFTER_MERGE_MS = 24 * 60 * 60 * 1000;
