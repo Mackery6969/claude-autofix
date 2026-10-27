@@ -285,7 +285,7 @@ Every one of Claude's pull requests, and every issue it has opened or commented 
 
 ### Usage limits
 
-When Claude reports a usage limit, the run stops without committing anything and tells the hub when the limit resets. The hub holds every repository's queued work until then, since they all spend the same subscription, and starts with the run that paused. If that run hits the limit again (a weekly limit, say), it pauses again with the new reset time.
+When Claude reports a usage limit, the run stops without committing anything and tells the hub when the limit resets. The hub holds every repository's queued work until then, since they all spend the same subscription, and starts with the run that paused. Scheduled sweeps, scans and quality passes that come due during the pause are skipped rather than saved up, so a reset doesn't start a run for every repository at once; each picks up again at its next slot. If that run hits the limit again (a weekly limit, say), it pauses again with the new reset time.
 
 Nothing sleeps in a job waiting for a limit, and Claude can't start subagents, so a run doesn't quietly multiply its usage.
 

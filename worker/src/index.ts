@@ -210,36 +210,43 @@ class Hub {
   async tick(now: number): Promise<string[]> {
     const log: string[] = [];
     if (now - (await this.state.lastSync()) >= SYNC_EVERY_MS) log.push(`Synced ${(await this.sync(now)).length} installed repositories.`);
+    const pause = await this.state.pause();
+    const paused = pause !== undefined && pause.until > now;
+    const scheduled: Job[] = [];
     for (const record of await this.state.repositories()) {
       if (!(await this.permitted(record.repository))) continue;
-      const work = scheduledWork(record, now, await this.state.settings(record.repository));
-      for (const job of work.jobs) await this.state.enqueue(job);
+      const work = scheduledWork(record, now, await this.state.settings(record.repository), paused);
+      for (const job of work.jobs) {
+        if (await this.state.isQueued(job)) await this.state.enqueue(job);
+        else scheduled.push(job);
+      }
       if (work.record !== record) await this.state.saveRepository(work.record);
     }
 
     await this.installWorkflows(log).catch((error: unknown) => log.push(`Couldn't install workflows: ${error instanceof Error ? error.message : String(error)}`));
 
-    const pause = await this.state.pause();
-    if (pause && pause.until > now) {
-      log.push(`Paused on a usage limit until ${new Date(pause.until).toISOString()}.`);
+    if (paused) {
+      log.push(`Paused on a usage limit until ${new Date(pause.until).toISOString()}; scheduled runs are skipped until then.`);
       return log;
     }
 
-    const jobs = await this.state.jobsIfDue(now);
-    const due = dueJobs(jobs, now, DISPATCHES_PER_TICK);
-    const waiting = jobs.filter((job) => !due.includes(job));
+    const queued = await this.state.jobsIfDue(now);
+    const due = dueJobs([...queued, ...scheduled], now, DISPATCHES_PER_TICK);
+    for (const job of scheduled) if (!due.includes(job)) await this.state.enqueue(job);
+    const waiting = queued.filter((job) => !due.includes(job));
     if (waiting.length > 0) await this.state.expectJobAt(Math.min(...waiting.map((job) => job.due)));
     if (due.length === 0) return log;
     let runner: number | undefined;
     const runnerInstallation = async () => (runner ??= await this.app.installationFor(this.env.RUNNER_REPOSITORY));
     for (const job of due) {
+      const stored = queued.includes(job);
       if (!(await this.permitted(job.repository))) {
-        await this.state.finish(job);
+        if (stored) await this.state.finish(job);
         continue;
       }
       try {
         await this.dispatch(runnerInstallation, job);
-        await this.state.finish(job);
+        if (stored) await this.state.finish(job);
         log.push(`Dispatched ${job.task} for ${job.repository}${job.pullRequest ? ` #${job.pullRequest}` : ` on ${job.ref}`}.`);
       } catch (error) {
         await this.state.postpone(job, now + RETRY_AFTER_MS);

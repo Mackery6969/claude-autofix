@@ -30,7 +30,7 @@ function lastRun(record: RepositoryRecord, task: ScheduledTask, every: number, n
   return stored ?? now - every + spread(`${record.repository}|${task}`, every);
 }
 
-export function scheduledWork(record: RepositoryRecord, now: number, settings: HubSettings): { jobs: Job[]; record: RepositoryRecord } {
+export function scheduledWork(record: RepositoryRecord, now: number, settings: HubSettings, paused = false): { jobs: Job[]; record: RepositoryRecord } {
   const jobs: Job[] = [];
   const last: Partial<Record<ScheduledTask, number>> = { ...record.last };
   let changed = record.last === undefined;
@@ -41,7 +41,7 @@ export function scheduledWork(record: RepositoryRecord, now: number, settings: H
     if (record.last?.[task] === undefined) changed = true;
     last[task] = previous;
     if (now - previous < every) continue;
-    jobs.push({ repository: record.repository, installation: record.installation, task, ref: record.defaultBranch, sha: "", pullRequest: undefined, issue: undefined, sender: "", due: now });
+    if (!paused) jobs.push({ repository: record.repository, installation: record.installation, task, ref: record.defaultBranch, sha: "", pullRequest: undefined, issue: undefined, sender: "", due: now });
     last[task] = now;
     changed = true;
   }
