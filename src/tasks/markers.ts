@@ -32,6 +32,7 @@ export function coverage(items: CoveringItem[], now: Date): Coverage {
   const merges = new Map<string, Array<{ at: number; number: number | undefined }>>();
   const skip = new Set<string>();
   for (const item of items) {
+    if (item.pull_request !== undefined && !isPullRequest(item)) continue;
     const merged = isPullRequest(item) && item.merged_at ? Date.parse(item.merged_at) : undefined;
     for (const key of keysInMarker(item.body ?? "")) {
       if (merged === undefined || key.startsWith("issue-")) skip.add(key);
