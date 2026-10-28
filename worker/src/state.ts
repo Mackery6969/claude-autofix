@@ -72,6 +72,10 @@ export class State {
     return this.#listed<Job>("job:");
   }
 
+  queued(job: Job): Promise<Job | undefined> {
+    return this.#read<Job>(jobKey(job));
+  }
+
   async isQueued(job: Job): Promise<boolean> {
     return (await this.#store.get(jobKey(job))) !== null;
   }

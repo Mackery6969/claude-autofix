@@ -394,7 +394,10 @@ class Hub {
 
   async continueLap(record: RepositoryRecord, lapDone: boolean, now: number): Promise<void> {
     const next: Job = { repository: record.repository, installation: record.installation, task: "scan", ref: record.defaultBranch, sha: "", pullRequest: undefined, issue: undefined, sender: "", due: now };
-    if (lapDone) return this.state.finish(next);
+    if (lapDone) {
+      if (!(await this.state.queued(next))?.before) await this.state.finish(next);
+      return;
+    }
     const settings = await this.state.settings(record.repository);
     if (settings.tasks.includes("scan")) await this.state.enqueue({ ...next, due: now + settings.scanPace });
   }
