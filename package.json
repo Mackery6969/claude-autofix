@@ -33,7 +33,7 @@
     "setup-hub": "node scripts/setup-hub.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.304"
+    "@anthropic-ai/claude-agent-sdk": "0.3.308"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
